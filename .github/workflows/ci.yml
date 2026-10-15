@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-26
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -22,7 +22,7 @@ jobs:
         run: go build ./...
 
   lint:
-    runs-on: ubuntu-26
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -33,7 +33,7 @@ jobs:
           version: v2.14.0
 
   release-check:
-    runs-on: ubuntu-26
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
