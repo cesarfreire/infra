@@ -1,0 +1,35 @@
+version: 2
+
+project_name: infra
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/infra
+    binary: infra
+    env:
+      - CGO_ENABLED=0
+    # Sessions need a Unix pseudo-terminal, so no Windows build (use WSL).
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      # GITHUB_REPOSITORY (owner/name) is set by GitHub Actions; it enables
+      # the in-app check for new releases. Local snapshots leave it empty.
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}} -X main.repository={{ envOrDefault "GITHUB_REPOSITORY" "" }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
