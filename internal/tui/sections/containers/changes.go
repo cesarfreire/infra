@@ -26,7 +26,7 @@ func (m *Model) confirmDeploy(s domain.Service) tea.Cmd {
 		if err := svc.ForceDeployment(ctx, s); err != nil {
 			return changedMsg{err: err}
 		}
-		return changedMsg{text: "Deployment of " + s.Name + " started; follow it in the service details (d)"}
+		return changedMsg{text: "Deployment of " + s.Name + " started", deployed: &s}
 	})
 }
 

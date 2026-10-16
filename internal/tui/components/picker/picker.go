@@ -67,6 +67,24 @@ func New(title string, items []Item, current string, rows int) *Model {
 	return m
 }
 
+// SetItems replaces the choices, keeping what was typed and, when it is
+// still there, the item under the cursor.
+func (m *Model) SetItems(items []Item) {
+	selected, hadSelection := m.Selected()
+	m.items = items
+	m.applyFilter()
+	if hadSelection {
+		for i, it := range m.visible {
+			if it.Value == selected.Value {
+				m.setCursor(i)
+			}
+		}
+	}
+}
+
+// SetTitle changes the heading.
+func (m *Model) SetTitle(title string) { m.title = title }
+
 // Focus returns the command that blinks the filter input cursor.
 func (m *Model) Focus() tea.Cmd { return m.input.Focus() }
 

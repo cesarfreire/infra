@@ -3,6 +3,7 @@ package aws
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"infra/internal/domain"
 )
@@ -76,4 +77,18 @@ func (b ConsoleURLBuilder) LoadBalancerURL(lb domain.LoadBalancer) string {
 	region := url.QueryEscape(b.region)
 	return fmt.Sprintf("https://%[1]s.console.aws.amazon.com/ec2/home?region=%[1]s#LoadBalancer:loadBalancerArn=%[2]s",
 		region, url.QueryEscape(lb.ARN))
+}
+
+// ParameterURL links to the parameter in the Systems Manager console.
+func (b ConsoleURLBuilder) ParameterURL(p domain.Parameter) string {
+	region := url.QueryEscape(b.region)
+	return fmt.Sprintf("https://%[1]s.console.aws.amazon.com/systems-manager/parameters/%[2]s/description?region=%[1]s",
+		region, url.PathEscape(strings.TrimPrefix(p.Name, "/")))
+}
+
+// SecretURL links to the secret in the Secrets Manager console.
+func (b ConsoleURLBuilder) SecretURL(s domain.Secret) string {
+	region := url.QueryEscape(b.region)
+	return fmt.Sprintf("https://%[1]s.console.aws.amazon.com/secretsmanager/secret?name=%[2]s&region=%[1]s",
+		region, url.QueryEscape(s.Name))
 }

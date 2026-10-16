@@ -141,3 +141,82 @@ func TestPutItemConvertsAndConditions(t *testing.T) {
 		t.Errorf("delete key = %+v", f.del.Key)
 	}
 }
+
+func TestListDeploymentTasksIncludesStopped(t *testing.T) {
+	f := &fakeECS{}
+	tasks, err := NewContainerRepository(f).ListDeploymentTasks(context.Background(), "prod", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(f.listedStatuses, ",") != "RUNNING,STOPPED" {
+		t.Errorf("statuses listed = %v", f.listedStatuses)
+	}
+	// The fake lists the same task in both: it must be described once.
+	if len(tasks) != 1 {
+		t.Errorf("tasks = %d, want the duplicate removed", len(tasks))
+	}
+}
+
+func TestTaskStopDetails(t *testing.T) {
+	code := int32(137)
+	task := toDomainTask("prod", types.Task{
+		TaskArn:       sdkaws.String("arn:task/prod/abc"),
+		StartedBy:     sdkaws.String("ecs-svc/123"),
+		StoppedReason: sdkaws.String("Scaling activity initiated by (deployment ecs-svc/456)"),
+		StopCode:      types.TaskStopCodeServiceSchedulerInitiated,
+		Containers:    []types.Container{{Name: sdkaws.String("app"), ExitCode: &code, Reason: sdkaws.String("OOM")}},
+	})
+	if task.StartedBy != "ecs-svc/123" || task.StopCode != "ServiceSchedulerInitiated" || !strings.Contains(task.StoppedReason, "Scaling") {
+		t.Errorf("task = %+v", task)
+	}
+	if c := task.Containers[0]; c.ExitCode == nil || *c.ExitCode != 137 || c.Reason != "OOM" {
+		t.Errorf("container = %+v", c)
+	}
+}
+
+func (f *fakeECS) DescribeTaskDefinition(_ context.Context, in *ecs.DescribeTaskDefinitionInput, _ ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error) {
+	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: &types.TaskDefinition{
+		Family: sdkaws.String("api"), Revision: 8, Cpu: sdkaws.String("512"), Memory: sdkaws.String("1024"),
+		ContainerDefinitions: []types.ContainerDefinition{{
+			Name: sdkaws.String("app"), Image: sdkaws.String("repo/api:v42"), Cpu: 256, Memory: sdkaws.Int32(512),
+			Environment:  []types.KeyValuePair{{Name: sdkaws.String("LOG"), Value: sdkaws.String("info")}},
+			Secrets:      []types.Secret{{Name: sdkaws.String("DB"), ValueFrom: sdkaws.String("arn:secret")}},
+			PortMappings: []types.PortMapping{{ContainerPort: sdkaws.Int32(8080)}},
+		}},
+	}}, nil
+}
+
+func TestGetTaskDefinition(t *testing.T) {
+	def, err := NewContainerRepository(&fakeECS{}).GetTaskDefinition(context.Background(), "api:8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := def.Containers[0]
+	if def.Name() != "api:8" || c.Image != "repo/api:v42" || c.Memory != 512 || c.Env["LOG"] != "info" ||
+		c.Secrets["DB"] != "arn:secret" || c.Ports[0] != 8080 {
+		t.Errorf("unexpected mapping: %+v", def)
+	}
+}
+
+func TestRollbackUpdatesTaskDefinition(t *testing.T) {
+	f := &fakeECS{}
+	NewContainerRepository(f).UpdateTaskDefinition(context.Background(), "prod", "api", "api:7")
+	if len(f.updates) != 1 || sdkaws.ToString(f.updates[0].TaskDefinition) != "api:7" {
+		t.Errorf("updates = %+v", f.updates)
+	}
+}
+
+func TestServiceTargetGroupsAndDigest(t *testing.T) {
+	s := toDomainService("prod", types.Service{LoadBalancers: []types.LoadBalancer{
+		{TargetGroupArn: sdkaws.String("tg-1"), ContainerName: sdkaws.String("app")},
+		{TargetGroupArn: sdkaws.String("tg-1"), ContainerName: sdkaws.String("app")}, // listed twice: kept once
+	}})
+	if len(s.TargetGroups) != 1 || s.TargetGroups[0] != "tg-1" {
+		t.Errorf("target groups = %v", s.TargetGroups)
+	}
+	task := toDomainTask("prod", types.Task{TaskArn: sdkaws.String("t/1"),
+		Containers: []types.Container{{Name: sdkaws.String("app"), ImageDigest: sdkaws.String("sha256:abc")}}})
+	if task.Containers[0].ImageDigest != "sha256:abc" {
+		t.Errorf("digest = %q", task.Containers[0].ImageDigest)
+	}
+}

@@ -23,6 +23,8 @@ func (m *Model) View() string {
 		return m.details.View()
 	case viewScale:
 		return m.viewScale()
+	case viewWatch:
+		return m.watchVP.View()
 	case viewPortForward:
 		return m.form.View(m.theme, "Port forward", taskLabel(m.task)+" · "+m.container.Name)
 	}

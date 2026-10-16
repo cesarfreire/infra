@@ -122,6 +122,28 @@ func lastSegmentN(arn string, n int) string {
 	return parts[len(parts)-n]
 }
 
+// TargetHealth returns the targets of a target group and their health.
+func (r *LoadBalancerRepository) TargetHealth(ctx context.Context, targetGroupARN string) ([]domain.Target, error) {
+	out, err := r.client.DescribeTargetHealth(ctx, &elb.DescribeTargetHealthInput{TargetGroupArn: &targetGroupARN})
+	if err != nil {
+		return nil, classify(err)
+	}
+	targets := make([]domain.Target, 0, len(out.TargetHealthDescriptions))
+	for _, d := range out.TargetHealthDescriptions {
+		t := domain.Target{}
+		if d.Target != nil {
+			t.ID = sdkaws.ToString(d.Target.Id)
+			t.Port = int(sdkaws.ToInt32(d.Target.Port))
+			t.Zone = sdkaws.ToString(d.Target.AvailabilityZone)
+		}
+		if h := d.TargetHealth; h != nil {
+			t.State, t.Reason, t.Description = string(h.State), string(h.Reason), sdkaws.ToString(h.Description)
+		}
+		targets = append(targets, t)
+	}
+	return targets, nil
+}
+
 // ListTargetGroups returns the target groups of lb with the health of their
 // targets, read in parallel.
 func (r *LoadBalancerRepository) ListTargetGroups(ctx context.Context, lb domain.LoadBalancer) ([]domain.TargetGroup, error) {
@@ -152,23 +174,9 @@ func (r *LoadBalancerRepository) ListTargetGroups(ctx context.Context, lb domain
 	g.SetLimit(describeConcurrency)
 	for i := range groups {
 		g.Go(func() error {
-			out, err := r.client.DescribeTargetHealth(ctx, &elb.DescribeTargetHealthInput{TargetGroupArn: &groups[i].ARN})
-			if err != nil {
-				return classify(err)
-			}
-			for _, d := range out.TargetHealthDescriptions {
-				t := domain.Target{}
-				if d.Target != nil {
-					t.ID = sdkaws.ToString(d.Target.Id)
-					t.Port = int(sdkaws.ToInt32(d.Target.Port))
-					t.Zone = sdkaws.ToString(d.Target.AvailabilityZone)
-				}
-				if h := d.TargetHealth; h != nil {
-					t.State, t.Reason, t.Description = string(h.State), string(h.Reason), sdkaws.ToString(h.Description)
-				}
-				groups[i].Targets = append(groups[i].Targets, t)
-			}
-			return nil
+			targets, err := r.TargetHealth(ctx, groups[i].ARN)
+			groups[i].Targets = targets
+			return err
 		})
 	}
 	if err := g.Wait(); err != nil {

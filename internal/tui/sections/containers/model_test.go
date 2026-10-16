@@ -35,6 +35,9 @@ type fakeService struct {
 	consoled  string
 	reads     int
 	changes   []string
+	// rollouts are the snapshots Rollout returns, one per call.
+	rollouts     []domain.Rollout
+	rolloutCalls int
 }
 
 func (f *fakeService) ListClusters(context.Context) ([]domain.Cluster, error) {
@@ -86,6 +89,27 @@ func (f *fakeService) GetService(_ context.Context, cluster, name string) (domai
 	}, nil
 }
 
+// Rollout returns the next snapshot of rollouts, repeating the last one.
+func (f *fakeService) Rollout(_ context.Context, s domain.Service) (domain.Rollout, error) {
+	f.rolloutCalls++
+	if len(f.rollouts) == 0 {
+		return domain.Rollout{Service: s}, nil
+	}
+	r := f.rollouts[min(f.rolloutCalls, len(f.rollouts))-1]
+	return r, nil
+}
+
+func (f *fakeService) PreviousRevision(context.Context, domain.Service) (app.RevisionChange, error) {
+	from := domain.TaskDefinition{Family: "api", Revision: 7, Containers: []domain.ContainerDefinition{{Name: "app", Image: "repo/api:v41"}}}
+	to := domain.TaskDefinition{Family: "api", Revision: 8, Containers: []domain.ContainerDefinition{{Name: "app", Image: "repo/api:v42"}}}
+	return app.RevisionChange{From: from, To: to, Changes: domain.DiffTaskDefinitions(from, to)}, nil
+}
+
+func (f *fakeService) Rollback(_ context.Context, s domain.Service, td domain.TaskDefinition) error {
+	f.changes = append(f.changes, "rollback "+s.Name+" to "+td.Name())
+	return nil
+}
+
 func (f *fakeService) ForceDeployment(_ context.Context, s domain.Service) error {
 	f.changes = append(f.changes, "deploy "+s.Name)
 	return nil
@@ -132,7 +156,7 @@ func send(m *Model, msgs ...tea.Msg) []tea.Msg {
 		_, cmd := m.Update(msg)
 		for _, r := range run(cmd) {
 			switch r.(type) {
-			case section.StatusMsg, section.AlertMsg, section.OpenSessionMsg, section.NavigateMsg, section.ConfirmMsg:
+			case section.StatusMsg, section.AlertMsg, section.OpenSessionMsg, section.NavigateMsg, section.ConfirmMsg, section.NotifyMsg:
 				out = append(out, r) // for the root model
 			default:
 				msgs = append(msgs, r) // load results, metrics...

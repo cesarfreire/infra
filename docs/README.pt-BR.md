@@ -30,6 +30,12 @@ Interface de terminal para operar infraestrutura na AWS sem sair do terminal. Li
 - **Filtro em todas as listas.** `/` filtra por texto livre ou por campo (`state:running az:1a tag:env=prod`). A busca ignora maiúsculas e acentos.
 - **Monitoramento.** A tela de detalhes de cada recurso tem gráficos do CloudWatch com janelas de 1h a 7d, atualizados a cada minuto.
 - **Favoritos e recentes.** `*` marca qualquer recurso. A seção **Favorites** leva direto a ele, com listas separadas por perfil e região.
+- **Acompanhamento de deploys.** Depois de um force deploy (ou com `w` num service), uma tela ao vivo é atualizada a cada 3 segundos. Ela mostra:
+  - o progresso de cada deployment, a imagem e o digest em que a tag foi resolvida;
+  - as tasks subindo, rodando, drenando e parando, com a saúde no container e no load balancer, o motivo da parada e o código de saída.
+
+  `v` mostra o que mudou em relação à revisão anterior da task definition e `R` faz o rollback para ela. Quando o rollout termina ou falha, chega uma notificação do sistema. No Windows Terminal, o progresso aparece também na aba e no ícone da barra de tarefas.
+- **Busca global.** `ctrl+k` encontra pelo nome instâncias, clusters e services do ECS, load balancers, tabelas, caches, filas, parâmetros e secrets, e leva direto até eles.
 - **Mudanças seguras.** Toda ação que altera um recurso pede confirmação (`y`). Perfis podem ser marcados como somente leitura.
 - **Aviso de atualização.** Ao abrir, a aplicação consulta o GitHub em segundo plano, no máximo uma vez por dia, para ver se há uma versão nova. Se houver, o cabeçalho mostra `↑ vX.Y.Z available`; clicar abre a página da release.
 
@@ -41,6 +47,7 @@ Interface de terminal para operar infraestrutura na AWS sem sair do terminal. Li
 | **Key-value DBs** (DynamoDB) | Scan paginado, busca por chave, item em JSON, edição e exclusão de itens, capacidade consumida e throttles |
 | **Caches** (ElastiCache) | Redis, Valkey e memcached, incluindo serverless. `valkey-cli`/`redis-cli` e port forward através de um jump host. CPU, memória, conexões e taxa de acerto |
 | **Queues** (SQS) | Backlog, DLQ, espiar mensagens, idade da mensagem mais antiga e vazão |
+| **Config** (Parameter Store, Secrets Manager) | Parâmetros e secrets com seus metadados. Valores `SecureString` e secrets só aparecem depois de revelados com confirmação, e são descartados ao sair da tela |
 | **Sessions** | Shells e túneis abertos, com o terminal embutido |
 
 ## Requisitos
@@ -90,16 +97,21 @@ infra --read-only                       # bloqueia qualquer alteração nesta ex
 | `esc` | Voltar (no topo de uma seção, volta ao menu) |
 | `/` | Filtrar a lista (`enter` mantém o filtro, `esc` limpa) |
 | `*` | Marcar ou desmarcar como favorito |
+| `ctrl+k` | Buscar qualquer recurso pelo nome |
 | `r` | Recarregar |
 | `ctrl+p` / `ctrl+r` | Trocar perfil / região (também clicando no cabeçalho) |
 | `q` / `ctrl+c` | Sair (fecha todas as sessões) |
+
+As notificações do sistema usam `notify-send` no Linux, `osascript` no macOS e um toast do Windows (via `powershell.exe`) no WSL. Sem nenhum deles, a aplicação pede a notificação ao terminal (OSC 9).
 
 **Por seção**
 
 | Seção | Teclas |
 |---|---|
 | Instances | `enter` ações · `c` shell · `p` port forward · `o` console · `d` detalhes · `S` start · `X` stop · `B` reboot |
-| Containers | clusters: `enter` services · `t` todas as tasks — services: `enter` tasks · `d` detalhes e deploys · `D` forçar deploy · `N` desired count — tasks: `enter` ações · `c` shell · `p` port forward |
+| Containers | clusters: `enter` services · `t` todas as tasks — services: `enter` tasks · `d` detalhes e deploys · `w` acompanhar o deploy · `D` forçar deploy · `N` desired count — tasks: `enter` ações · `c` shell · `p` port forward |
+| Acompanhamento de deploy | `p` pausar/retomar · `r` atualizar agora · `v` mudanças em relação à revisão anterior · `R` rollback · `D` novo deploy · `↑`/`↓` rolar |
+| Config | `tab` parâmetros/secrets · `enter` detalhes · `v` revelar o valor (pede confirmação) · `o` console |
 | Load balancers | `enter` target groups › targets · `d` detalhes com listeners |
 | Key-value DBs | `enter` itens · `f` buscar por chave — itens: `enter` ver JSON · `n` próxima página · `e` editar (`ctrl+s` salva) · `x` excluir |
 | Caches | `c` CLI via jump host · `p` port forward via jump host · `d` detalhes |
@@ -122,7 +134,7 @@ Os arquivos ficam em `~/.config/infra/` (ou no diretório de configuração do s
   }
   ```
 
-  Adicione `"updateCheck": false` para desligar a verificação de novas versões. Os padrões seguem a sintaxe de `path.Match`. Perfis somente leitura exibem `read-only` no cabeçalho e bloqueiam start/stop, deploys, edição e exclusão de itens, e a leitura de mensagens SQS (que aumenta o contador de recebimentos).
+  Adicione `"updateCheck": false` para desligar a verificação de novas versões e `"notifications": false` para desligar as notificações do sistema e o bell do terminal. Os padrões seguem a sintaxe de `path.Match`. Perfis somente leitura exibem `read-only` no cabeçalho e bloqueiam start/stop, deploys, edição e exclusão de itens, e a leitura de mensagens SQS (que aumenta o contador de recebimentos).
 
 - **`state.json`** é gravado pela aplicação: último perfil e região, janela de tempo dos gráficos, resultado da última verificação de atualização, jump host escolhido para cada cache, favoritos e recentes (por perfil e região). Pode ser apagado a qualquer momento.
 
@@ -139,7 +151,8 @@ A aplicação mostra um alerta quando falta uma permissão, então só é precis
 
 | Funcionalidade | Ações |
 |---|---|
-| Leitura | `ec2:DescribeInstances`, `ecs:List*`, `ecs:Describe*`, `elasticloadbalancing:Describe*`, `dynamodb:ListTables`, `dynamodb:DescribeTable`, `dynamodb:Scan`, `dynamodb:Query`, `elasticache:Describe*`, `sqs:ListQueues`, `sqs:GetQueueAttributes`, `cloudwatch:GetMetricData` |
+| Leitura | `ec2:DescribeInstances`, `ecs:List*`, `ecs:Describe*`, `elasticloadbalancing:Describe*`, `dynamodb:ListTables`, `dynamodb:DescribeTable`, `dynamodb:Scan`, `dynamodb:Query`, `elasticache:Describe*`, `sqs:ListQueues`, `sqs:GetQueueAttributes`, `cloudwatch:GetMetricData`, `ssm:DescribeParameters`, `secretsmanager:ListSecrets` |
+| Revelar valores | `ssm:GetParameter` (e `kms:Decrypt` para `SecureString`), `secretsmanager:GetSecretValue` |
 | Shells e túneis | `ssm:StartSession` (documentos `AWS-StartInteractiveCommand`, `AWS-StartPortForwardingSession` e `AWS-StartPortForwardingSessionToRemoteHost`), `ssm:TerminateSession`, `ecs:ExecuteCommand` |
 | Alterações | `ec2:StartInstances`, `ec2:StopInstances`, `ec2:RebootInstances`, `ecs:UpdateService`, `dynamodb:PutItem`, `dynamodb:DeleteItem`, `sqs:ReceiveMessage` |
 

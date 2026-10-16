@@ -43,6 +43,11 @@ type ContainerRepository interface {
 	ListServices(ctx context.Context, cluster string) ([]domain.Service, error)
 	// GetService reads one service, with its deployments and events.
 	GetService(ctx context.Context, cluster, name string) (domain.Service, error)
+	// GetTaskDefinition reads a revision ("family:revision").
+	GetTaskDefinition(ctx context.Context, name string) (domain.TaskDefinition, error)
+	// ListDeploymentTasks lists the running, starting and recently
+	// stopped tasks of a service.
+	ListDeploymentTasks(ctx context.Context, cluster, service string) ([]domain.Task, error)
 	// ListTasks lists running tasks; an empty service lists every task in
 	// the cluster.
 	ListTasks(ctx context.Context, cluster, service string) ([]domain.Task, error)
@@ -107,6 +112,13 @@ type ServiceController interface {
 	// pushed under the same tag.
 	ForceNewDeployment(ctx context.Context, cluster, service string) error
 	UpdateDesiredCount(ctx context.Context, cluster, service string, count int) error
+	// UpdateTaskDefinition deploys another revision (used to roll back).
+	UpdateTaskDefinition(ctx context.Context, cluster, service, taskDefinition string) error
+}
+
+// TargetHealthReader reads the health of the targets of a target group.
+type TargetHealthReader interface {
+	TargetHealth(ctx context.Context, targetGroupARN string) ([]domain.Target, error)
 }
 
 // ItemWriter changes items of key-value tables.
@@ -141,4 +153,23 @@ type LoadBalancerRepository interface {
 // LoadBalancerConsoleURLBuilder builds web console links for load balancers.
 type LoadBalancerConsoleURLBuilder interface {
 	LoadBalancerURL(lb domain.LoadBalancer) string
+}
+
+// ParameterRepository reads the parameter store.
+type ParameterRepository interface {
+	ListParameters(ctx context.Context) ([]domain.Parameter, error)
+	// ParameterValue returns the value, decrypted for SecureString.
+	ParameterValue(ctx context.Context, name string) (string, error)
+}
+
+// SecretRepository reads secrets.
+type SecretRepository interface {
+	ListSecrets(ctx context.Context) ([]domain.Secret, error)
+	SecretValue(ctx context.Context, arn string) (domain.SecretValue, error)
+}
+
+// ConfigConsoleURLBuilder builds web console links for parameters and secrets.
+type ConfigConsoleURLBuilder interface {
+	ParameterURL(p domain.Parameter) string
+	SecretURL(s domain.Secret) string
 }

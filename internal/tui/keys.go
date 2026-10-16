@@ -9,6 +9,7 @@ type keyMap struct {
 	Back       key.Binding
 	Quit       key.Binding
 	ForceQuit  key.Binding
+	Search     key.Binding
 	Profile    key.Binding
 	Region     key.Binding
 	CloseAlert key.Binding
@@ -25,6 +26,7 @@ func defaultKeyMap() keyMap {
 		Back:       key.NewBinding(key.WithKeys("esc", "shift+tab"), key.WithHelp("esc", "menu")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		ForceQuit:  key.NewBinding(key.WithKeys("ctrl+c")),
+		Search:     key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "search")),
 		Profile:    key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "profile")),
 		Region:     key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "region")),
 		CloseAlert: key.NewBinding(key.WithKeys("enter", "esc", "q"), key.WithHelp("enter/esc", "close")),

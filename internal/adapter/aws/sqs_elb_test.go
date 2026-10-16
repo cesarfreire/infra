@@ -136,3 +136,10 @@ func TestLoadBalancerMetricDimension(t *testing.T) {
 		t.Error("gateway load balancers have no charts")
 	}
 }
+
+func TestTargetHealthByARN(t *testing.T) {
+	targets, err := NewLoadBalancerRepository(fakeELB{}).TargetHealth(context.Background(), "tg-arn")
+	if err != nil || len(targets) != 1 || targets[0].ID != "i-1" || targets[0].State != "unhealthy" {
+		t.Errorf("TargetHealth() = %+v, %v", targets, err)
+	}
+}

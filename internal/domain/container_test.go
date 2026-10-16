@@ -50,3 +50,20 @@ func TestRollingOut(t *testing.T) {
 		t.Error("RollingOut() wrong")
 	}
 }
+
+func TestRolloutGrouping(t *testing.T) {
+	r := domain.Rollout{
+		Service: domain.Service{Deployments: []domain.Deployment{{ID: "ecs-svc/new"}, {ID: "ecs-svc/old"}}},
+		Tasks: []domain.Task{
+			{ID: "a", StartedBy: "ecs-svc/new"},
+			{ID: "b", StartedBy: "ecs-svc/old"},
+			{ID: "c", StartedBy: "ecs-svc/older", DesiredStatus: "STOPPED"},
+		},
+	}
+	if got := r.TasksOf(r.Service.Deployments[0]); len(got) != 1 || got[0].ID != "a" {
+		t.Errorf("TasksOf(new) = %v", got)
+	}
+	if got := r.Orphans(); len(got) != 1 || got[0].ID != "c" || !got[0].Stopping() {
+		t.Errorf("Orphans() = %v", got)
+	}
+}

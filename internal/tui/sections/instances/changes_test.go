@@ -94,3 +94,12 @@ func TestOpeningRecordsRecents(t *testing.T) {
 		t.Errorf("recents = %v", recents)
 	}
 }
+
+func TestSearchItems(t *testing.T) {
+	m, _, _ := newLoaded(t)
+	items := m.SearchItems()
+	if len(items) != 2 || items[0].Bookmark.Kind != domain.KindInstance || items[0].Bookmark.Label != "web" ||
+		!strings.Contains(items[0].Detail, "i-1") {
+		t.Errorf("items = %+v", items)
+	}
+}

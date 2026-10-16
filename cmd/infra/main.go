@@ -14,6 +14,7 @@ import (
 	"infra/internal/adapter/aws"
 	"infra/internal/adapter/browser"
 	"infra/internal/adapter/github"
+	"infra/internal/adapter/notify"
 	"infra/internal/app"
 	"infra/internal/prefs"
 	"infra/internal/session"
@@ -84,6 +85,10 @@ func run() error {
 	}
 
 	opts := tui.Options{Title: "infra", Workspace: ws, Profile: initialProfile, Region: initialRegion, OpenURL: opener.Open}
+	opts.NoNotifications = store != nil && !store.NotificationsEnabled()
+	if desktop := notify.New(); desktop.Available() {
+		opts.Notify = desktop.Notify
+	}
 	if repository != "" && !*noUpdateCheck && (store == nil || store.UpdateCheckEnabled()) {
 		deps := app.UpdateDeps{Source: github.NewReleases(repository, version), Current: version}
 		if store != nil {

@@ -58,6 +58,22 @@ func TestNoMatchCannotChoose(t *testing.T) {
 	}
 }
 
+func TestSetItemsKeepsFilterAndSelection(t *testing.T) {
+	m := New("Pick", items(5), "", 5)
+	for _, r := range "item-0" {
+		m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	m.Update(press(tea.KeyDown))
+	m.Update(press(tea.KeyDown))
+	m.SetItems(append([]Item{{Value: "new", Label: "item-00-new"}}, items(5)...))
+	if sel, _ := m.Selected(); sel.Value != "v02" {
+		t.Errorf("Selected() = %v, want v02 kept", sel)
+	}
+	if len(m.visible) != 6 {
+		t.Errorf("the filter should still apply: %d visible", len(m.visible))
+	}
+}
+
 func TestClick(t *testing.T) {
 	m := New("Pick", items(20), "", 5)
 	if !m.Click(Top + 2) {

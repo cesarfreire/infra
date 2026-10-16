@@ -16,6 +16,20 @@ type fakeContainerRepo struct {
 	services []domain.Service
 	tasks    []domain.Task
 	err      error
+	defs     map[string]domain.TaskDefinition
+	defReads *int
+	service  *domain.Service // returned by GetService when set
+}
+
+func (f fakeContainerRepo) GetTaskDefinition(_ context.Context, name string) (domain.TaskDefinition, error) {
+	if f.defReads != nil {
+		*f.defReads++
+	}
+	def, ok := f.defs[name]
+	if !ok {
+		return domain.TaskDefinition{}, errors.New("not found: " + name)
+	}
+	return def, nil
 }
 
 func (f fakeContainerRepo) ListClusters(context.Context) ([]domain.Cluster, error) {
@@ -27,7 +41,14 @@ func (f fakeContainerRepo) ListServices(context.Context, string) ([]domain.Servi
 }
 
 func (f fakeContainerRepo) GetService(_ context.Context, cluster, name string) (domain.Service, error) {
+	if f.service != nil {
+		return *f.service, f.err
+	}
 	return domain.Service{Cluster: cluster, Name: name}, f.err
+}
+
+func (f fakeContainerRepo) ListDeploymentTasks(context.Context, string, string) ([]domain.Task, error) {
+	return f.tasks, f.err
 }
 
 func (f fakeContainerRepo) ListTasks(context.Context, string, string) ([]domain.Task, error) {
@@ -122,5 +143,33 @@ func TestContainerConsoles(t *testing.T) {
 	want := []string{"cluster/prod", "service/prod/api", "task/prod/t1"}
 	if !slices.Equal(opener.opened, want) {
 		t.Errorf("opened = %v, want %v", opener.opened, want)
+	}
+}
+
+func TestRolloutFiltersAndOrdersTasks(t *testing.T) {
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	repo := fakeContainerRepo{tasks: []domain.Task{
+		{ID: "stopped-long-ago", LastStatus: "STOPPED", DesiredStatus: "STOPPED", StoppedAt: now.Add(-2 * time.Hour)},
+		{ID: "stopped", LastStatus: "STOPPED", DesiredStatus: "STOPPED", StoppedAt: now.Add(-5 * time.Minute)},
+		{ID: "draining", LastStatus: "RUNNING", DesiredStatus: "STOPPED"},
+		{ID: "pending", LastStatus: "PENDING", DesiredStatus: "RUNNING"},
+		{ID: "old-running", LastStatus: "RUNNING", DesiredStatus: "RUNNING", StartedAt: now.Add(-time.Hour)},
+		{ID: "new-running", LastStatus: "RUNNING", DesiredStatus: "RUNNING", StartedAt: now.Add(-time.Minute)},
+	}}
+	svc := app.NewContainerService(app.ContainerDeps{Repo: repo, Now: func() time.Time { return now }})
+	r, err := svc.Rollout(context.Background(), domain.Service{Cluster: "prod", Name: "api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, task := range r.Tasks {
+		ids = append(ids, task.ID)
+	}
+	want := []string{"new-running", "old-running", "pending", "draining", "stopped"}
+	if !slices.Equal(ids, want) {
+		t.Errorf("tasks = %v, want %v", ids, want)
+	}
+	if r.Service.Name != "api" {
+		t.Errorf("service = %+v", r.Service)
 	}
 }

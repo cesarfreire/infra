@@ -28,6 +28,9 @@ type Settings struct {
 	// UpdateCheck turns the check for new versions at startup on or off
 	// (default on).
 	UpdateCheck *bool `json:"updateCheck,omitempty"`
+	// Notifications turns desktop notifications and the terminal bell on
+	// or off (default on), e.g. when a deployment finishes.
+	Notifications *bool `json:"notifications,omitempty"`
 }
 
 // scope holds the state of one profile and region.
@@ -133,6 +136,11 @@ func (s *Store) SetLastContext(profile, region string) error {
 // UpdateCheckEnabled reports whether settings.json allows the update check.
 func (s *Store) UpdateCheckEnabled() bool {
 	return s.settings.UpdateCheck == nil || *s.settings.UpdateCheck
+}
+
+// NotificationsEnabled reports whether settings.json allows notifications.
+func (s *Store) NotificationsEnabled() bool {
+	return s.settings.Notifications == nil || *s.settings.Notifications
 }
 
 // GetGlobal returns a value shared by every profile.

@@ -53,6 +53,38 @@ type Listener interface {
 	Listen() tea.Cmd
 }
 
+// Searchable is implemented by sections whose resources the global search
+// (ctrl+k) can find. It returns what the section has loaded so far.
+type Searchable interface {
+	SearchItems() []SearchItem
+}
+
+// SearchItem is a resource offered by the global search. Choosing it
+// navigates to the section and reveals the bookmark.
+type SearchItem struct {
+	Bookmark domain.Bookmark
+	Detail   string // shown dimmed and matched by the search, e.g. an ID
+}
+
+// ProgressReporter is implemented by sections that show the progress of a
+// long operation in the terminal's own progress indicator (tab, taskbar).
+// It is used for the active section; nil means no progress.
+type ProgressReporter interface {
+	Progress() *tea.ProgressBar
+}
+
+// NotifyMsg asks the root to tell the user something finished, even if they
+// are looking at another window: a desktop notification and the bell.
+type NotifyMsg struct {
+	Title string
+	Body  string
+}
+
+// Notify returns a command that emits NotifyMsg.
+func Notify(title, body string) tea.Cmd {
+	return func() tea.Msg { return NotifyMsg{Title: title, Body: body} }
+}
+
 // CursorProvider is implemented by sections that show a real terminal cursor.
 // The position is relative to the section content; nil hides the cursor.
 type CursorProvider interface {

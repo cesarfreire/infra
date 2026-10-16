@@ -16,6 +16,7 @@ type fakeECS struct {
 	serviceArns     []string
 	describeBatches [][]string
 	listTasksInput  *ecs.ListTasksInput
+	listedStatuses  []string
 	updates         []*ecs.UpdateServiceInput
 }
 
@@ -49,6 +50,7 @@ func (f *fakeECS) DescribeServices(_ context.Context, in *ecs.DescribeServicesIn
 
 func (f *fakeECS) ListTasks(_ context.Context, in *ecs.ListTasksInput, _ ...func(*ecs.Options)) (*ecs.ListTasksOutput, error) {
 	f.listTasksInput = in
+	f.listedStatuses = append(f.listedStatuses, string(in.DesiredStatus))
 	return &ecs.ListTasksOutput{TaskArns: []string{"arn:aws:ecs:r:1:task/prod/abc123"}}, nil
 }
 

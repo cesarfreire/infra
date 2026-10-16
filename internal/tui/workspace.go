@@ -190,6 +190,9 @@ func (m *Model) openRegionPicker() tea.Cmd {
 
 // choose applies a picker selection.
 func (m *Model) choose(kind dialogKind, value string) tea.Cmd {
+	if kind == dialogSearch {
+		return m.chooseSearch(value)
+	}
 	if kind == dialogRegion {
 		return m.switchTo(m.profile, value)
 	}

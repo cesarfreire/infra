@@ -41,6 +41,11 @@ func (f *fakeControl) UpdateDesiredCount(_ context.Context, cluster, service str
 	return nil
 }
 
+func (f *fakeControl) UpdateTaskDefinition(_ context.Context, cluster, service, td string) error {
+	f.calls = append(f.calls, "rollback "+cluster+"/"+service+" to "+td)
+	return nil
+}
+
 func (f *fakeControl) PutItem(_ context.Context, _ domain.Table, item domain.Item) error {
 	f.items = append(f.items, item)
 	return nil

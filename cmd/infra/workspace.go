@@ -10,7 +10,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/elasticache"
 	elb "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
 	"infra/internal/adapter/aws"
@@ -21,6 +23,7 @@ import (
 	"infra/internal/tui"
 	"infra/internal/tui/section"
 	"infra/internal/tui/sections/caches"
+	"infra/internal/tui/sections/config"
 	"infra/internal/tui/sections/containers"
 	"infra/internal/tui/sections/favorites"
 	"infra/internal/tui/sections/instances"
@@ -91,20 +94,26 @@ func (w *workspace) Open(profile, region string) (tui.Environment, error) {
 	instanceRepo := aws.NewInstanceRepository(ec2.NewFromConfig(cfg))
 	containerRepo := aws.NewContainerRepository(ecs.NewFromConfig(cfg))
 	kvRepo := aws.NewKeyValueRepository(dynamodb.NewFromConfig(cfg))
+	lbRepo := aws.NewLoadBalancerRepository(elb.NewFromConfig(cfg))
 	identity := aws.NewIdentityChecker(sts.NewFromConfig(cfg))
 
 	instanceSvc := app.NewInstanceService(app.InstanceDeps{Repo: instanceRepo, Control: instanceRepo,
 		Sessions: sessionCmds, Console: consoleURLs, Opener: w.opener, Metrics: metrics, Policy: policy})
 	containerSvc := app.NewContainerService(app.ContainerDeps{Repo: containerRepo, Control: containerRepo,
-		Sessions: sessionCmds, Console: consoleURLs, Opener: w.opener, Metrics: metrics, Policy: policy})
+		Sessions: sessionCmds, Console: consoleURLs, Opener: w.opener, Metrics: metrics, Policy: policy, Targets: lbRepo})
 	keyValueSvc := app.NewKeyValueService(app.KeyValueDeps{Repo: kvRepo, Writer: kvRepo,
 		Console: consoleURLs, Opener: w.opener, Metrics: metrics, Policy: policy})
 	cacheSvc := app.NewCacheService(app.CacheDeps{Repo: aws.NewCacheRepository(elasticache.NewFromConfig(cfg)),
 		Instances: instanceRepo, Sessions: sessionCmds, Console: consoleURLs, Opener: w.opener, Metrics: metrics})
 	queueSvc := app.NewQueueService(app.QueueDeps{Repo: aws.NewQueueRepository(sqs.NewFromConfig(cfg)),
 		Console: consoleURLs, Opener: w.opener, Metrics: metrics, Policy: policy})
-	lbSvc := app.NewLoadBalancerService(app.LoadBalancerDeps{Repo: aws.NewLoadBalancerRepository(elb.NewFromConfig(cfg)),
+	lbSvc := app.NewLoadBalancerService(app.LoadBalancerDeps{Repo: lbRepo,
 		Console: consoleURLs, Opener: w.opener, Metrics: metrics})
+
+	configSvc := app.NewConfigService(app.ConfigDeps{
+		Parameters: aws.NewParameterRepository(ssm.NewFromConfig(cfg)),
+		Secrets:    aws.NewSecretRepository(secretsmanager.NewFromConfig(cfg)),
+		Console:    consoleURLs, Opener: w.opener})
 
 	containersSection := containers.New(containerSvc, w.sessions, deps)
 	owners := map[domain.ResourceKind]string{
@@ -115,6 +124,8 @@ func (w *workspace) Open(profile, region string) (tui.Environment, error) {
 		domain.KindCache:        caches.Title,
 		domain.KindQueue:        queues.Title,
 		domain.KindLoadBalancer: loadbalancers.Title,
+		domain.KindParameter:    config.Title,
+		domain.KindSecret:       config.Title,
 	}
 	return tui.Environment{
 		Profile: profile,
@@ -127,6 +138,7 @@ func (w *workspace) Open(profile, region string) (tui.Environment, error) {
 			keyvalue.New(keyValueSvc, deps),
 			caches.New(cacheSvc, w.sessions, deps),
 			queues.New(queueSvc, deps),
+			config.New(configSvc, deps),
 			w.sessionsSection,
 		},
 		Verify:   identity.CallerIdentity,

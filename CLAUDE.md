@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`infra` is a keyboard-driven terminal UI (mouse clicks also work) for operating cloud infrastructure, built with the Charm v2 libraries (`charm.land/bubbletea/v2`, `bubbles/v2`, `lipgloss/v2`). Layout: a menu on the left (Favorites, Instances, Containers, Load balancers, Key-value DBs, Caches, Queues, Sessions) and the selected section on the right. Only AWS is supported for now. Requires Go 1.27.2 (`go.mod` pins it; `GOTOOLCHAIN=auto` downloads it).
+`infra` is a keyboard-driven terminal UI (mouse clicks also work) for operating cloud infrastructure, built with the Charm v2 libraries (`charm.land/bubbletea/v2`, `bubbles/v2`, `lipgloss/v2`). Layout: a menu on the left (Favorites, Instances, Containers, Load balancers, Key-value DBs, Caches, Queues, Config, Sessions) and the selected section on the right. Only AWS is supported for now. Requires Go 1.27.2 (`go.mod` pins it; `GOTOOLCHAIN=auto` downloads it).
 
 Runtime deps for sessions: the `aws` CLI and `session-manager-plugin` must be on `PATH`.
 
@@ -28,13 +28,18 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
 
 ## Architecture (clean architecture; dependencies point inward)
 
-- `internal/domain`: provider-agnostic entities and errors. `Bookmark` (a `Kind` plus `ID` and `Parent`) identifies a resource for favorites and recents. `ErrReadOnly` and `ErrInvalidState` guard changes. Account context uses `Profile`, `Region` and `Identity`. Two error sentinels drive the alert dialogs: `ErrAccessDenied` (valid credentials, missing permission) and `ErrUnauthenticated` (credentials missing, invalid or expired). `ErrNoRegion` makes the root ask for a region. Instances use `Instance`. Containers use `Cluster` › `Service` › `Task` › `Container`; `Task.CanExec` holds the exec preconditions. ECS `Service` also carries `Deployments` (newest first) and `Events`, and `RollingOut()` reports a rollout in progress. Key-value DBs use `Table`, `Item` and `ItemPage`. `Item` values are plain Go values: numbers are `domain.Number` (the exact decimal string), and sets keep their type (`StringSet`, `NumberSet`, `BinarySet`, which marshal to JSON as arrays). `Cursor` is an opaque pagination token owned by the adapter. Queues use `Queue` and `Message`. Load balancers use `LoadBalancer`, `Listener`, `TargetGroup` and `Target`. Caches use `Cache` and `Endpoint`. Monitoring uses `Series` (a list of `Point`s plus a `Unit`) over a `MetricWindow` (time range and point period).
+- `internal/domain`: provider-agnostic entities and errors. `Bookmark` (a `Kind` plus `ID` and `Parent`) identifies a resource for favorites and recents. `ErrReadOnly` and `ErrInvalidState` guard changes. Account context uses `Profile`, `Region` and `Identity`. Two error sentinels drive the alert dialogs: `ErrAccessDenied` (valid credentials, missing permission) and `ErrUnauthenticated` (credentials missing, invalid or expired). `ErrNoRegion` makes the root ask for a region. Instances use `Instance`. Containers use `Cluster` › `Service` › `Task` › `Container`; `Task.CanExec` holds the exec preconditions. ECS `Service` also carries `Deployments` (newest first) and `Events`, and `RollingOut()` reports a rollout in progress. Key-value DBs use `Table`, `Item` and `ItemPage`. `Item` values are plain Go values: numbers are `domain.Number` (the exact decimal string), and sets keep their type (`StringSet`, `NumberSet`, `BinarySet`, which marshal to JSON as arrays). `Cursor` is an opaque pagination token owned by the adapter. Queues use `Queue` and `Message`. Config uses `Parameter` (`Secure()` for `SecureString`), `Secret` and `SecretValue`. ECS task definitions use `TaskDefinition`/`ContainerDefinition`, and `DiffTaskDefinitions` returns the `Change`s between two revisions (secrets are compared by `valueFrom`, never by value). `Rollout` also carries `TargetGroups` (health), `Definitions` (by `family:revision`) and `Problems`. `TargetOf(task)` matches load balancer targets by private IP, and `Image(deployment)` returns the image and the resolved digest. `ResourceKind.Label()` names each kind. Load balancers use `LoadBalancer`, `Listener`, `TargetGroup` and `Target`. Caches use `Cache` and `Endpoint`. Monitoring uses `Series` (a list of `Point`s plus a `Unit`) over a `MetricWindow` (time range and point period).
   - `PortForward` is shared by every resource. `Target` is the provider's session target. When `RemoteHost` is set, `Target` acts as a jump host and the tunnel goes through it to `RemoteHost:RemotePort`. Imports nothing from the SDK or UI.
 - `internal/app`: use cases (`InstanceService`, `ContainerService`, `KeyValueService`, `CacheService`, `QueueService`, `LoadBalancerService`) plus the **ports** they depend on (`ports.go`).
   - Each use case is built from a deps struct, e.g. `app.NewInstanceService(app.InstanceDeps{...})`.
   - **Changes** go through controller ports: `InstanceController` (start/stop/reboot), `ServiceController` (force deployment, desired count) and `ItemWriter` (put/delete item).
   - **`app.Policy{ReadOnly}`** guards every change. `CheckWrite` returns `domain.ErrReadOnly`. Use cases are the authority; the UI only checks too, to fail early.
   - Peeking SQS messages counts as a change, because it raises their receive count.
+  - `ContainerService.Rollout` reads the extras in `addExtras`: the target health of every target group, through the optional `TargetHealthReader` port, and the task definition of every deployment. Failures there become `Rollout.Problems`, not errors.
+    - `TaskDefinition` caches revisions, which are immutable.
+    - `PreviousRevision` picks the rollback target: an older deployment with a different revision, else `family:revision-1`.
+    - `Rollback` (`ServiceController.UpdateTaskDefinition`) is checked by the read-only policy.
+  - `ConfigService` reads parameters and secrets. Values are read on demand and never cached.
   - Item editing: `ParseItemJSON` and `PrepareItemUpdate` refuse changes to the key attributes, and they give sets and binaries their DynamoDB types back after a JSON edit.
   - Ports are split per resource (interface segregation), with a shared `URLOpener`:
 
@@ -68,7 +73,9 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
     - DynamoDB: `PutItem` and `DeleteItem` on `KeyValueRepository`. `PutItem` requires `attribute_exists(pk)`, so an edit never re-creates a deleted item.
   - ECS `GetService` and `toDomainService` map deployments and events, keeping the latest 30 events.
   - SQS (`sqs.go`): it reads attributes in parallel. `PeekMessages` uses `VisibilityTimeout: 1`, because the SDK omits a zero value and the queue default (often 30s) would then hide the messages from consumers.
-  - ELB v2 (`elb.go`): target health is read in parallel. Listener default actions are rendered as text.
+  - SSM Parameter Store and Secrets Manager (`params.go`): `GetParameter` always decrypts, and listing never returns values.
+  - ECS also has `GetTaskDefinition` (`DescribeTaskDefinition`) and `UpdateTaskDefinition`. `toDomainService` keeps the service's target group ARNs, and tasks keep `ImageDigest`, `StartedBy`, the stop details and the container exit codes.
+  - ELB v2 (`elb.go`): `TargetHealth(arn)` is shared by the section and the rollout. Target health is read in parallel. Listener default actions are rendered as text.
   - CloudWatch (`cloudwatch.go`): `Metrics` implements every metrics port.
     - Which namespace, dimensions and statistic each chart uses lives in its `metric` specs. One `GetMetricData` call per resource reads them all, and errors go through `classify`.
     - `rate: true` turns a per-period Sum into a per-second value. `ratioOf` plots `100 * name / ratioOf` with a metric-math expression. ECS tasks use it (`CpuUtilized/CpuReserved` from Container Insights), so task charts are empty without enhanced observability.
@@ -81,6 +88,7 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
   - `state.json` is written by the app (atomically, mode 0600). It holds the last profile and region, global values (the chart time range) and, per profile and region, favorites, recents (at most 20) and values such as the jump host per cache.
   - `settings.json` is edited by the user: `{"readOnlyProfiles": ["prod", "*-prd"]}` (`path.Match` patterns).
   - `Store.Scope(profile, region)` returns a `*Scoped`, which satisfies `section.Bookmarks` and `section.Prefs`.
+- `internal/adapter/notify`: desktop notifications. It uses `osascript` on macOS, a Windows toast via `powershell.exe` under WSL (detected with `WSL_DISTRO_NAME`/`WSL_INTEROP`, using the PowerShell AppUserModelID), and `notify-send` elsewhere. `main` sets `Options.Notify` only when `Available()`.
 - `internal/adapter/github`: `Releases` implements `app.ReleaseSource` with the anonymous GitHub REST API (`/repos/{repo}/releases/latest`, 5s timeout).
 - `internal/adapter/browser`: opens URLs (`wslview` first on Linux for WSL, then `xdg-open`).
 - `internal/session`: `Manager` and `Session`. Each session is an `app.Command` running in a PTY (`creack/pty`), with its screen kept in a `charmbracelet/x/vt` emulator.
@@ -106,6 +114,12 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
     - Sections returned again by `Open` (the shared Sessions section) keep their state: they are neither re-initialized nor re-listened. Running sessions keep the profile they were started with.
     - Choosing a profile applies its configured region, or keeps the current one.
     - `Environment.ReadOnly` shows a "read-only" chip in the header.
+    - `section.NotifyMsg` (via `section.Notify`) rings the bell. It also shows a desktop notification through `Options.Notify`, or, without a notifier, asks the terminal with OSC 9. `Options.NoNotifications` (`"notifications": false`) turns all of it off.
+    - `section.ProgressReporter.Progress()` of the active section becomes `View.ProgressBar`: the OSC 9;4 terminal progress shown by Windows Terminal on its tab and taskbar.
+    - `search.go` (`ctrl+k`, not in `ModeRaw`) is the global search, a `dialogSearch` picker over every `section.Searchable`.
+      - Opening it initializes the searchable sections that were never opened.
+      - While it is open, every broadcast refreshes the results (`picker.SetItems` keeps what was typed and the selection).
+      - Choosing a result emits `NavigateMsg` + `RevealMsg`, like Favorites.
     - `Options.Updates` is checked once in `Init`. A newer release adds a right-aligned `↑ vX available` segment to the header (`targetUpdate`), which opens `Options.OpenURL` on click. Failures are silent. It is off with `--no-update-check` or `"updateCheck": false` in `settings.json`.
     - The initial context is `--profile`/`--region`, else the last one used (`state.json`), else `$AWS_PROFILE` and the profile's region.
     - Keys: `ctrl+p` (profile) and `ctrl+r` (region), or a click on the chips. They work in every mode except `ModeRaw`, where the remote shell needs them.
@@ -187,6 +201,21 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
 - Favorites and recents: a `*` key in lists calls `deps.ToggleFavorite(bookmark(x))` and then `list.Refresh()`. Opening an item (actions, drill-down, details) calls `deps.Visit`. Each section defines `bookmark(...)` next to its marker.
 - Changes (Instances `S`/`X`/`B`, Containers `D`/`N`, Key-value `e`/`x`): a result message (`changedMsg`/`itemChangedMsg`) reports the outcome, and the section reloads or patches its list.
 - Containers service details re-read the service every 10s (`serviceTickMsg`/`serviceReadMsg`, guarded by `svcSeq`) to follow deployments. `leaveView` stops it.
+- Deployment view (`sections/containers/watch.go`, `viewWatch`). It opens with `w` on a service and automatically after a confirmed force deploy (`changedMsg.deployed`).
+  - Every 3s it reads `ContainerService.Rollout`: `GetService` and `ListDeploymentTasks` in parallel. The tasks are both RUNNING and STOPPED desired status, with duplicate ARNs removed, and stopped tasks older than `RolloutStoppedWindow` are dropped.
+  - Tasks are grouped under their deployment by `Task.StartedBy == Deployment.ID`; the rest go under "Earlier deployments".
+  - `watchState.seq` guards the loop. Each result schedules the next tick, and pause, refresh now and leave bump `seq`, so only one loop ever runs.
+  - Tasks whose `LastStatus/DesiredStatus/Health` changed since the previous snapshot are marked `›`.
+  - The PRIMARY deployment drives the outcome. `FAILED` raises an error; the rollout leaving `RollingOut()` reports "completed in …". Both also send `section.Notify`.
+  - The view shows, for each target group, a health summary, the `lb <state>` of each task, the image and digest of each deployment, and `Rollout.Problems`.
+  - `v` toggles a diff with the previous revision (`watchState.showDiff`), and `esc` closes the diff before leaving the view. `R` loads `PreviousRevision` and confirms a rollback that lists the image changes; on success, `changedMsg.deployed` re-opens the view.
+  - `Progress()` reports the primary deployment's `running/desired` as a percentage, an error state when the rollout failed, and nothing once it is steady.
+- Config specifics (`sections/config`): one section with two `listview`s (`tab` switches parameters/secrets; secrets load on first use).
+  - Details render into a `viewport`. `String`/`StringList` values load when opened.
+  - `SecureString` values and secrets stay masked until `v`, which asks for confirmation.
+  - `revealMsg`/`valueMsg` carry `seq`, so a confirmation or a read for details already left is dropped.
+  - `closeDetails` forgets the value.
+- Every resource section implements `section.Searchable` in its `search.go`, offering what its lists have loaded (for ECS, the clusters plus the services of the cluster opened last).
 
 ### Adding a new resource type
 

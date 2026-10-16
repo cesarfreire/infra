@@ -5,6 +5,11 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"infra/internal/domain"
 )
@@ -18,10 +23,17 @@ type ContainerDeps struct {
 	Opener   URLOpener
 	Metrics  ContainerMetricsSource
 	Policy   Policy
+	Now      func() time.Time   // defaults to time.Now
+	Targets  TargetHealthReader // optional: load balancer health in rollouts
 }
 
 // ContainerService implements the use cases available for containers.
 type ContainerService struct {
+	now     func() time.Time
+	targets TargetHealthReader
+
+	defsMu   sync.Mutex
+	defs     map[string]domain.TaskDefinition // revisions are immutable
 	repo     ContainerRepository
 	control  ServiceController
 	sessions ContainerSessionBuilder
@@ -33,8 +45,13 @@ type ContainerService struct {
 
 // NewContainerService wires the container use cases with their adapters.
 func NewContainerService(d ContainerDeps) *ContainerService {
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &ContainerService{repo: d.Repo, control: d.Control, sessions: d.Sessions, console: d.Console,
-		opener: d.Opener, metrics: d.Metrics, policy: d.Policy}
+		opener: d.Opener, metrics: d.Metrics, policy: d.Policy, now: now, targets: d.Targets,
+		defs: map[string]domain.TaskDefinition{}}
 }
 
 // GetService reads a service again, e.g. to follow a rollout.
@@ -44,6 +61,177 @@ func (s *ContainerService) GetService(ctx context.Context, cluster, name string)
 		return domain.Service{}, fmt.Errorf("reading service %s: %w", name, err)
 	}
 	return svc, nil
+}
+
+// RolloutStoppedWindow is how far back stopped tasks are shown when
+// following a deployment.
+const RolloutStoppedWindow = 30 * time.Minute
+
+// Rollout reads a service and its tasks to follow a deployment. Stopped
+// tasks are kept only if they stopped within RolloutStoppedWindow; the
+// rest are ordered by deployment, then state, then start time.
+func (s *ContainerService) Rollout(ctx context.Context, svc domain.Service) (domain.Rollout, error) {
+	var r domain.Rollout
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		r.Service, err = s.repo.GetService(gctx, svc.Cluster, svc.Name)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		r.Tasks, err = s.repo.ListDeploymentTasks(gctx, svc.Cluster, svc.Name)
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		return domain.Rollout{}, fmt.Errorf("reading the rollout of %s: %w", svc.Name, err)
+	}
+	s.addExtras(ctx, &r)
+	cutoff := s.now().Add(-RolloutStoppedWindow)
+	r.Tasks = slices.DeleteFunc(r.Tasks, func(t domain.Task) bool {
+		return t.LastStatus == "STOPPED" && !t.StoppedAt.IsZero() && t.StoppedAt.Before(cutoff)
+	})
+	slices.SortStableFunc(r.Tasks, func(a, b domain.Task) int {
+		return cmp.Or(cmp.Compare(taskRank(a), taskRank(b)), b.StartedAt.Compare(a.StartedAt), cmp.Compare(a.ID, b.ID))
+	})
+	return r, nil
+}
+
+// addExtras reads the target health and task definitions of a rollout.
+// They are extras: a failure becomes a problem shown with the snapshot.
+func (s *ContainerService) addExtras(ctx context.Context, r *domain.Rollout) {
+	var mu sync.Mutex
+	problem := func(what string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		r.Problems = append(r.Problems, fmt.Sprintf("%s: %v", what, err))
+	}
+	var wg sync.WaitGroup
+	if s.targets != nil {
+		r.TargetGroups = make([]domain.TargetGroup, len(r.Service.TargetGroups))
+		for i, arn := range r.Service.TargetGroups {
+			wg.Go(func() {
+				targets, err := s.targets.TargetHealth(ctx, arn)
+				if err != nil {
+					problem("target health", err)
+				}
+				r.TargetGroups[i] = domain.TargetGroup{Name: targetGroupName(arn), ARN: arn, Targets: targets}
+			})
+		}
+	}
+	r.Definitions = map[string]domain.TaskDefinition{}
+	for _, d := range r.Service.Deployments {
+		wg.Go(func() {
+			def, err := s.TaskDefinition(ctx, d.TaskDefinition)
+			if err != nil {
+				problem("task definition "+d.TaskDefinition, err)
+				return
+			}
+			mu.Lock()
+			r.Definitions[d.TaskDefinition] = def
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	slices.Sort(r.Problems)
+	r.Problems = slices.Compact(r.Problems)
+}
+
+// targetGroupName extracts the name from ".../targetgroup/<name>/<id>".
+func targetGroupName(arn string) string {
+	parts := strings.Split(arn, "/")
+	if len(parts) >= 3 {
+		return parts[len(parts)-2]
+	}
+	return arn
+}
+
+// TaskDefinition reads a revision ("family:revision"), cached because
+// revisions never change.
+func (s *ContainerService) TaskDefinition(ctx context.Context, name string) (domain.TaskDefinition, error) {
+	s.defsMu.Lock()
+	def, ok := s.defs[name]
+	s.defsMu.Unlock()
+	if ok {
+		return def, nil
+	}
+	def, err := s.repo.GetTaskDefinition(ctx, name)
+	if err != nil {
+		return domain.TaskDefinition{}, err
+	}
+	s.defsMu.Lock()
+	s.defs[name] = def
+	s.defsMu.Unlock()
+	return def, nil
+}
+
+// RevisionChange is the task definition running now, the one before it,
+// and what changed between them.
+type RevisionChange struct {
+	From    domain.TaskDefinition
+	To      domain.TaskDefinition
+	Changes []domain.Change
+}
+
+// PreviousRevision tells what a rollback would deploy: the task definition
+// of an older deployment still in the service, if it differs from the
+// primary one, else the primary's previous revision.
+func (s *ContainerService) PreviousRevision(ctx context.Context, svc domain.Service) (RevisionChange, error) {
+	primary := ""
+	for _, d := range svc.Deployments {
+		if d.Status == "PRIMARY" {
+			primary = d.TaskDefinition
+		}
+	}
+	if primary == "" {
+		primary = svc.TaskDefinition
+	}
+	current, err := s.TaskDefinition(ctx, primary)
+	if err != nil {
+		return RevisionChange{}, fmt.Errorf("reading %s: %w", primary, err)
+	}
+	previous := ""
+	for _, d := range svc.Deployments {
+		if d.Status != "PRIMARY" && d.TaskDefinition != primary {
+			previous = d.TaskDefinition
+			break
+		}
+	}
+	if previous == "" {
+		previous = current.PreviousRevision()
+	}
+	if previous == "" {
+		return RevisionChange{}, fmt.Errorf("%s is the first revision: %w", primary, domain.ErrInvalidState)
+	}
+	old, err := s.TaskDefinition(ctx, previous)
+	if err != nil {
+		return RevisionChange{}, fmt.Errorf("reading %s: %w", previous, err)
+	}
+	return RevisionChange{From: old, To: current, Changes: domain.DiffTaskDefinitions(old, current)}, nil
+}
+
+// Rollback deploys revision to the service.
+func (s *ContainerService) Rollback(ctx context.Context, svc domain.Service, revision domain.TaskDefinition) error {
+	if err := s.policy.CheckWrite("roll back " + svc.Name); err != nil {
+		return err
+	}
+	if err := s.control.UpdateTaskDefinition(ctx, svc.Cluster, svc.Name, revision.Name()); err != nil {
+		return fmt.Errorf("rolling back %s to %s: %w", svc.Name, revision.Name(), err)
+	}
+	return nil
+}
+
+// taskRank orders tasks: running first, then starting, then stopping, then stopped.
+func taskRank(t domain.Task) int {
+	switch {
+	case t.LastStatus == "STOPPED":
+		return 3
+	case t.Stopping():
+		return 2
+	case t.LastStatus == "RUNNING":
+		return 0
+	}
+	return 1
 }
 
 // ForceDeployment starts a new deployment that replaces every task.

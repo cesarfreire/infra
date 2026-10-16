@@ -19,6 +19,7 @@ const (
 	dialogRegion
 	dialogAlert
 	dialogConfirm
+	dialogSearch
 )
 
 const maxDialogWidth = 72

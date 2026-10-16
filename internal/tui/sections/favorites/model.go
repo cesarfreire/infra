@@ -64,33 +64,13 @@ func columns(sections map[domain.ResourceKind]string) []listview.Column[entry] {
 			}
 			return "  " + e.Label
 		}},
-		{Title: "Kind", Width: 14, Value: func(e entry) string { return kindLabel(e.Kind) }},
+		{Title: "Kind", Width: 14, Value: func(e entry) string { return e.Kind.Label() }},
 		{Title: "Section", Width: 16, Value: func(e entry) string { return sections[e.Kind] }},
 	}
 }
 
 func fields(e entry) []filter.Field {
 	return []filter.Field{{Name: "name", Value: e.Label}, {Name: "kind", Value: string(e.Kind)}}
-}
-
-func kindLabel(k domain.ResourceKind) string {
-	switch k {
-	case domain.KindInstance:
-		return "instance"
-	case domain.KindECSCluster:
-		return "ECS cluster"
-	case domain.KindECSService:
-		return "ECS service"
-	case domain.KindTable:
-		return "table"
-	case domain.KindCache:
-		return "cache"
-	case domain.KindQueue:
-		return "queue"
-	case domain.KindLoadBalancer:
-		return "load balancer"
-	}
-	return string(k)
 }
 
 // sync rebuilds the rows when the bookmarks changed: favorites first, then
@@ -143,7 +123,7 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 	case selected && key.Matches(k, m.keys.Open):
 		title, known := m.sections[e.Kind]
 		if !known {
-			return m, section.Status("No section shows " + kindLabel(e.Kind) + "s")
+			return m, section.Status("No section shows " + e.Kind.Label() + "s")
 		}
 		b := e.Bookmark
 		return m, tea.Sequence(section.Navigate(title), func() tea.Msg { return section.RevealMsg{Bookmark: b} })

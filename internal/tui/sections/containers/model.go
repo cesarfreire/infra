@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
 	"infra/internal/app"
@@ -42,6 +43,9 @@ type Service interface {
 	GetService(ctx context.Context, cluster, name string) (domain.Service, error)
 	ForceDeployment(ctx context.Context, s domain.Service) error
 	SetDesiredCount(ctx context.Context, s domain.Service, count int) error
+	Rollout(ctx context.Context, s domain.Service) (domain.Rollout, error)
+	PreviousRevision(ctx context.Context, s domain.Service) (app.RevisionChange, error)
+	Rollback(ctx context.Context, s domain.Service, revision domain.TaskDefinition) error
 }
 
 // SessionStarter runs commands as sessions shown inside the TUI. It is
@@ -69,6 +73,7 @@ const (
 	viewTaskDetails
 	viewPortForward
 	viewScale
+	viewWatch
 )
 
 // serviceRefresh is how often open service details are re-read, to follow
@@ -77,8 +82,9 @@ const serviceRefresh = 10 * time.Second
 
 // changedMsg reports a change (deploy, scale) made to a service.
 type changedMsg struct {
-	text string
-	err  error
+	text     string
+	err      error
+	deployed *domain.Service // set after a deployment, to follow it
 }
 
 type serviceTickMsg struct{ seq int }
@@ -137,6 +143,11 @@ type Model struct {
 	scale    textinput.Model
 	width    int
 	svcSeq   int // identifies the open service details; bumped when leaving
+	height   int
+
+	watch     watchState
+	watchVP   viewport.Model
+	watchKeys watchKeys
 
 	clusters *listview.Model[domain.Cluster]
 	services *listview.Model[domain.Service]
@@ -166,19 +177,21 @@ func New(svc Service, sessions SessionStarter, deps section.Deps) *Model {
 	scale.Prompt = "Desired tasks: "
 	scale.CharLimit = 4
 	m := &Model{
-		svc:      svc,
-		sessions: sessions,
-		deps:     deps,
-		scale:    scale,
-		theme:    th,
-		keys:     defaultKeyMap(),
-		clusters: listview.New("ECS clusters", "clusters", clusterColumns, clusterFields, clusterPlaceholder, th),
-		services: listview.New("Services", "services", serviceColumns, serviceFields, servicePlaceholder, th),
-		tasks:    listview.New("Tasks", "running tasks", taskColumns, taskFields, taskPlaceholder, th),
-		menu:     actionmenu.New(),
-		picker:   actionmenu.New(),
-		form:     portform.New(),
-		details:  detailpanel.New(th).WithPrefs(deps.Prefs),
+		svc:       svc,
+		sessions:  sessions,
+		deps:      deps,
+		scale:     scale,
+		watchVP:   viewport.New(),
+		watchKeys: defaultWatchKeys(),
+		theme:     th,
+		keys:      defaultKeyMap(),
+		clusters:  listview.New("ECS clusters", "clusters", clusterColumns, clusterFields, clusterPlaceholder, th),
+		services:  listview.New("Services", "services", serviceColumns, serviceFields, servicePlaceholder, th),
+		tasks:     listview.New("Tasks", "running tasks", taskColumns, taskFields, taskPlaceholder, th),
+		menu:      actionmenu.New(),
+		picker:    actionmenu.New(),
+		form:      portform.New(),
+		details:   detailpanel.New(th).WithPrefs(deps.Prefs),
 	}
 	m.menu.SetItems(m.taskMenuItems())
 	m.clusters.SetMarker(func(c domain.Cluster) string { return deps.Star(clusterBookmark(c.Name)) })
@@ -217,8 +230,13 @@ func (m *Model) SetSize(width, height int) {
 	for _, l := range m.lists() {
 		l.SetSize(width, height)
 	}
-	m.width = width
+	m.width, m.height = width, height
 	m.details.SetSize(width, height)
+	m.watchVP.SetWidth(width)
+	m.watchVP.SetHeight(max(1, height))
+	if m.view == viewWatch {
+		m.renderWatch()
+	}
 	if m.view == viewServiceDetails {
 		m.details.SetHeader(m.serviceDetailsHeader())
 	}
@@ -292,6 +310,10 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			return m, section.Error(msg.err)
 		}
 		cmds := []tea.Cmd{section.Status(msg.text)}
+		if msg.deployed != nil {
+			cmds = append(cmds, m.openWatch(*msg.deployed))
+			return m, tea.Batch(cmds...)
+		}
 		if m.level == levelServices {
 			cmds = append(cmds, m.loadServices())
 		}
@@ -299,6 +321,15 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			cmds = append(cmds, m.readService())
 		}
 		return m, tea.Batch(cmds...)
+	case rolloutMsg:
+		return m, m.handleRollout(msg)
+	case revisionMsg:
+		return m, m.handleRevision(msg)
+	case watchTickMsg:
+		if msg.seq == m.watch.seq && m.view == viewWatch && !m.watch.paused {
+			return m, m.readRollout()
+		}
+		return m, nil
 	case serviceTickMsg:
 		if msg.seq == m.svcSeq && m.view == viewServiceDetails {
 			return m, m.readService()
@@ -352,10 +383,12 @@ func (m *Model) reveal(b domain.Bookmark) tea.Cmd {
 	return nil
 }
 
-// leaveView returns to the current list, stopping detail refreshes.
+// leaveView returns to the current list, stopping detail and deployment
+// refreshes.
 func (m *Model) leaveView() {
 	m.details.Close()
 	m.svcSeq++
+	m.watch.seq++
 	m.view = viewList
 }
 
@@ -394,6 +427,12 @@ func (m *Model) handleClick(msg tea.MouseClickMsg) tea.Cmd {
 }
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
+	// esc first closes the diff shown over the deployment view.
+	if m.view == viewWatch && m.watch.showDiff && key.Matches(msg, m.keys.Back) {
+		m.watch.showDiff = false
+		m.renderWatch()
+		return nil
+	}
 	if m.view == viewTaskDetails || m.view == viewServiceDetails {
 		if cmd, ok := m.details.HandleKey(msg); ok {
 			return cmd
@@ -419,8 +458,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			return m.runTaskAction(a, m.task)
 		}
 		return nil
+	case viewWatch:
+		return m.handleWatchKey(msg)
 	case viewServiceDetails:
 		switch {
+		case key.Matches(msg, m.keys.Watch):
+			return m.openWatch(m.svcDetail)
 		case key.Matches(msg, m.keys.Deploy):
 			return m.confirmDeploy(m.svcDetail)
 		case key.Matches(msg, m.keys.Scale):
@@ -491,6 +534,8 @@ func (m *Model) handleListKey(msg tea.KeyPressMsg) tea.Cmd {
 				return m.openTasks(s.Name)
 			case key.Matches(msg, m.keys.Deploy):
 				return m.confirmDeploy(s)
+			case key.Matches(msg, m.keys.Watch):
+				return m.openWatch(s)
 			case key.Matches(msg, m.keys.Scale):
 				return m.openScale(s)
 			case key.Matches(msg, m.keys.Details):
@@ -572,7 +617,9 @@ func (m *Model) Help() []key.Binding {
 	case viewTaskDetails:
 		return append(m.details.Help(), k.Connect, k.PortForward, k.Console, k.Back)
 	case viewServiceDetails:
-		return append(m.details.Help(), k.Deploy, k.Scale, k.Back)
+		return append(m.details.Help(), k.Watch, k.Deploy, k.Scale, k.Back)
+	case viewWatch:
+		return m.watchHelp()
 	case viewScale:
 		return []key.Binding{k.Start, k.Back}
 	case viewPortForward:
@@ -587,7 +634,7 @@ func (m *Model) Help() []key.Binding {
 	case levelClusters:
 		b = []key.Binding{k.OpenServices, k.AllTasks, k.Console, k.Favorite, k.Refresh}
 	case levelServices:
-		b = []key.Binding{k.OpenTasks, k.AllTasks, k.Details, k.Deploy, k.Scale, k.Console, k.Favorite, k.Refresh, k.Back}
+		b = []key.Binding{k.OpenTasks, k.AllTasks, k.Details, k.Watch, k.Deploy, k.Scale, k.Console, k.Favorite, k.Refresh, k.Back}
 	case levelTasks:
 		b = []key.Binding{k.Actions, k.Connect, k.PortForward, k.Console, k.Details, k.Refresh, k.Back}
 	}

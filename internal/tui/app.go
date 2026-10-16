@@ -49,6 +49,10 @@ type Options struct {
 	Updates UpdateChecker
 	// OpenURL opens a link in the browser (the release page).
 	OpenURL func(url string) error
+	// Notify shows a desktop notification; nil means the terminal is asked
+	// to show it instead (OSC 9). NoNotifications turns both and the bell off.
+	Notify          func(title, body string) error
+	NoNotifications bool
 }
 
 // UpdateChecker reports whether a newer version of the app was released.
@@ -95,6 +99,7 @@ type Model struct {
 	alert    section.AlertMsg
 	alertSSO bool // the alert offers `aws sso login`
 	confirm  section.ConfirmMsg
+	found    map[string]searchEntry // global search results, by picker value
 }
 
 // New builds the root model with sections listed in menu order. With
@@ -168,6 +173,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleLoginDone(msg)
 	case section.NavigateMsg:
 		return m.navigate(msg.Title)
+	case section.NotifyMsg:
+		return m, m.notify(msg)
 	case updateMsg:
 		r := msg.release
 		m.update = &r
@@ -179,8 +186,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.picker != nil {
 		_, cmd := m.picker.Update(msg) // cursor blink
-		mm, cmd2 := m.broadcast(msg)
-		return mm, tea.Batch(cmd, cmd2)
+		next, cmd2 := m.broadcast(msg)
+		nm := next.(Model)
+		nm.refreshSearch() // sections may have loaded more resources
+		return nm, tea.Batch(cmd, cmd2)
 	}
 	return m.broadcast(msg)
 }
@@ -193,8 +202,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.focus == focusContent && len(m.sections) > 0 {
 		mode = m.current().InputMode()
 	}
-	// Context selectors work everywhere except inside an attached terminal,
-	// where ctrl+p/ctrl+r belong to the remote shell.
+	// Search and the context selectors work everywhere except inside an
+	// attached terminal, where ctrl+k/ctrl+p/ctrl+r belong to the remote shell.
+	if mode != section.ModeRaw && key.Matches(msg, m.keys.Search) && len(m.sections) > 0 {
+		return m, m.openSearch()
+	}
 	if m.workspace != nil && mode != section.ModeRaw {
 		switch {
 		case key.Matches(msg, m.keys.Profile):
@@ -365,6 +377,11 @@ func (m Model) View() tea.View {
 	v.MouseMode = tea.MouseModeCellMotion
 	v.WindowTitle = m.opts.Title
 	v.Cursor = m.cursor()
+	if len(m.sections) > 0 {
+		if p, ok := m.current().(section.ProgressReporter); ok {
+			v.ProgressBar = p.Progress()
+		}
+	}
 	return v
 }
 
@@ -384,6 +401,27 @@ func (m Model) checkUpdates() tea.Cmd {
 		}
 		return updateMsg{release: r}
 	}
+}
+
+// notify rings the bell and shows a desktop notification, or asks the
+// terminal for one (OSC 9, supported by iTerm2, WezTerm, Ghostty, kitty).
+func (m Model) notify(msg section.NotifyMsg) tea.Cmd {
+	if m.opts.NoNotifications {
+		return nil
+	}
+	if notify := m.opts.Notify; notify != nil {
+		return tea.Batch(tea.Raw("\a"), func() tea.Msg {
+			_ = notify(msg.Title, msg.Body) // best effort: the bell already rang
+			return nil
+		})
+	}
+	text := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1 // control characters would end the escape sequence
+		}
+		return r
+	}, msg.Title+": "+msg.Body)
+	return tea.Raw("\a\x1b]9;" + text + "\x07")
 }
 
 func (m Model) openRelease() tea.Cmd {
@@ -482,7 +520,7 @@ func (m Model) renderHelp() string {
 	case m.dialog != dialogNone:
 		b = bindings(m.picker.Help())
 	case m.focus == focusMenu || len(m.sections) == 0:
-		b = bindings{m.keys.Up, m.keys.Down, m.keys.Open}
+		b = bindings{m.keys.Up, m.keys.Down, m.keys.Open, m.keys.Search}
 		if m.workspace != nil {
 			b = append(b, m.keys.Profile, m.keys.Region)
 		}

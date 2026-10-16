@@ -30,6 +30,12 @@ A terminal UI for operating AWS infrastructure without leaving the terminal. It 
 - **Filtering in every list.** `/` filters by free text or by field (`state:running az:1a tag:env=prod`). Matching ignores case and accents.
 - **Monitoring.** Each resource's details view has CloudWatch charts, with time ranges from 1h to 7d, refreshed every minute.
 - **Favorites and recents.** `*` marks any resource as a favorite. The **Favorites** section jumps straight to it, with separate lists per profile and region.
+- **Deployment tracking.** After a forced deployment (or with `w` on a service), a live view refreshes every 3 seconds. It shows:
+  - each deployment's progress, its image and the digest the tag resolved to;
+  - its tasks starting, running, draining and stopping, with container and load balancer health, stop reasons and exit codes.
+
+  `v` shows what changed from the previous task definition revision and `R` rolls back to it. When the rollout completes or fails you get a desktop notification. Windows Terminal also shows the progress on its tab and taskbar icon.
+- **Global search.** `ctrl+k` finds instances, ECS clusters and services, load balancers, tables, caches, queues, parameters and secrets by name, and jumps to them.
 - **Safe changes.** Every change asks for confirmation (`y`). Profiles can be made read-only.
 - **Update notice.** At startup the app checks GitHub for a newer release in the background (at most once a day). When there is one, the header shows `↑ vX.Y.Z available`; click it to open the release page.
 
@@ -41,6 +47,7 @@ A terminal UI for operating AWS infrastructure without leaving the terminal. It 
 | **Key-value DBs** (DynamoDB) | Paginated scans, key queries, items as JSON, item editing and deletion, consumed capacity and throttling |
 | **Caches** (ElastiCache) | Redis, Valkey and memcached, serverless included. `valkey-cli`/`redis-cli` and port forwarding through a jump host. CPU, memory, connections and hit rate |
 | **Queues** (SQS) | Backlog, dead-letter queue, message peeking, age of the oldest message and throughput |
+| **Config** (Parameter Store, Secrets Manager) | Parameters and secrets with their metadata. `SecureString` values and secrets are shown only after a confirmed reveal, and are forgotten when you leave |
 | **Sessions** | Open shells and tunnels, with the embedded terminal |
 
 ## Requirements
@@ -90,16 +97,21 @@ infra --read-only                       # blocks every change for this run
 | `esc` | Go back (at the top of a section, back to the menu) |
 | `/` | Filter the list (`enter` keeps the filter, `esc` clears it) |
 | `*` | Toggle favorite |
+| `ctrl+k` | Search every resource by name |
 | `r` | Reload |
 | `ctrl+p` / `ctrl+r` | Switch profile / region (or click the header) |
 | `q` / `ctrl+c` | Quit (closes every session) |
+
+Desktop notifications use `notify-send` on Linux, `osascript` on macOS and a Windows toast (through `powershell.exe`) under WSL. Without any of these, the app asks the terminal for one (OSC 9).
 
 **Per section**
 
 | Section | Keys |
 |---|---|
 | Instances | `enter` actions · `c` shell · `p` port forward · `o` console · `d` details · `S` start · `X` stop · `B` reboot |
-| Containers | clusters: `enter` services · `t` all tasks — services: `enter` tasks · `d` details and deployments · `D` force deployment · `N` desired count — tasks: `enter` actions · `c` shell · `p` port forward |
+| Containers | clusters: `enter` services · `t` all tasks — services: `enter` tasks · `d` details and deployments · `w` watch the deployment · `D` force deployment · `N` desired count — tasks: `enter` actions · `c` shell · `p` port forward |
+| Deployment view | `p` pause/resume · `r` refresh now · `v` changes from the previous revision · `R` roll back · `D` deploy again · `↑`/`↓` scroll |
+| Config | `tab` parameters/secrets · `enter` details · `v` reveal the value (asks first) · `o` console |
 | Load balancers | `enter` target groups › targets · `d` details with listeners |
 | Key-value DBs | `enter` items · `f` find by key — items: `enter` view JSON · `n` next page · `e` edit (`ctrl+s` saves) · `x` delete |
 | Caches | `c` CLI through a jump host · `p` port forward through a jump host · `d` details |
@@ -122,7 +134,7 @@ The files live in `~/.config/infra/` (or your OS's config directory).
   }
   ```
 
-  Add `"updateCheck": false` to turn off the check for new versions. Patterns use `path.Match` syntax. Read-only profiles show `read-only` in the header. They block start/stop, deployments, item edits and deletions, and SQS message peeking (which raises the messages' receive count).
+  Add `"updateCheck": false` to turn off the check for new versions, and `"notifications": false` to turn off desktop notifications and the terminal bell. Patterns use `path.Match` syntax. Read-only profiles show `read-only` in the header. They block start/stop, deployments, item edits and deletions, and SQS message peeking (which raises the messages' receive count).
 
 - **`state.json`** is written by the app. It holds the last profile and region, the chart time range, the result of the last update check, the jump host chosen for each cache, and favorites and recents (per profile and region). You can delete it at any time.
 
@@ -139,7 +151,8 @@ The app shows an alert when a permission is missing, so you only need to grant t
 
 | Feature | Actions |
 |---|---|
-| Reading | `ec2:DescribeInstances`, `ecs:List*`, `ecs:Describe*`, `elasticloadbalancing:Describe*`, `dynamodb:ListTables`, `dynamodb:DescribeTable`, `dynamodb:Scan`, `dynamodb:Query`, `elasticache:Describe*`, `sqs:ListQueues`, `sqs:GetQueueAttributes`, `cloudwatch:GetMetricData` |
+| Reading | `ec2:DescribeInstances`, `ecs:List*`, `ecs:Describe*`, `elasticloadbalancing:Describe*`, `dynamodb:ListTables`, `dynamodb:DescribeTable`, `dynamodb:Scan`, `dynamodb:Query`, `elasticache:Describe*`, `sqs:ListQueues`, `sqs:GetQueueAttributes`, `cloudwatch:GetMetricData`, `ssm:DescribeParameters`, `secretsmanager:ListSecrets` |
+| Revealing values | `ssm:GetParameter` (plus `kms:Decrypt` for `SecureString`), `secretsmanager:GetSecretValue` |
 | Shells and tunnels | `ssm:StartSession` (documents `AWS-StartInteractiveCommand`, `AWS-StartPortForwardingSession` and `AWS-StartPortForwardingSessionToRemoteHost`), `ssm:TerminateSession`, `ecs:ExecuteCommand` |
 | Changes | `ec2:StartInstances`, `ec2:StopInstances`, `ec2:RebootInstances`, `ecs:UpdateService`, `dynamodb:PutItem`, `dynamodb:DeleteItem`, `sqs:ReceiveMessage` |
 
