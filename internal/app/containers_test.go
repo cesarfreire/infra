@@ -55,6 +55,10 @@ func (f fakeContainerRepo) ListTasks(context.Context, string, string) ([]domain.
 	return f.tasks, f.err
 }
 
+func (f fakeContainerRepo) ContainerHost(_ context.Context, _, arn string) (string, error) {
+	return "i-" + arn, f.err
+}
+
 type fakeContainerSessions struct{}
 
 func (fakeContainerSessions) ContainerShellSession(t domain.Task, c domain.Container) app.Command {
@@ -63,6 +67,10 @@ func (fakeContainerSessions) ContainerShellSession(t domain.Task, c domain.Conta
 
 func (fakeContainerSessions) ContainerPortForwardSession(t domain.Task, c domain.Container, _ domain.PortForward) app.Command {
 	return app.Command{Name: "forward", Args: []string{t.ID, c.Name}}
+}
+
+func (fakeContainerSessions) RemoteCommandSession(instanceID, command string) app.Command {
+	return app.Command{Name: "remote", Args: []string{instanceID, command}}
 }
 
 type fakeContainerConsole struct{}
@@ -121,6 +129,26 @@ func TestContainerConnect(t *testing.T) {
 	noExec.ExecEnabled = false
 	if _, err := svc.Connect(noExec, appContainer); !errors.Is(err, domain.ErrExecNotEnabled) {
 		t.Errorf("Connect(no exec) error = %v", err)
+	}
+}
+
+func TestContainerLogs(t *testing.T) {
+	svc := newContainerService(fakeContainerRepo{}, &fakeOpener{})
+	task := runningTask
+	task.ContainerInstanceARN = "ci1"
+	c := appContainer
+	c.RuntimeID = "0a1b2c"
+	cmd, err := svc.Logs(context.Background(), task, c)
+	want := []string{"i-ci1", "sudo docker logs --tail 500 -f 0a1b2c"}
+	if err != nil || cmd.Name != "remote" || !slices.Equal(cmd.Args, want) {
+		t.Errorf("Logs() = %+v, %v; want remote %v", cmd, err, want)
+	}
+	if _, err := svc.Logs(context.Background(), runningTask, c); !errors.Is(err, domain.ErrNoContainerHost) {
+		t.Errorf("Logs(fargate) error = %v", err)
+	}
+	c.RuntimeID = "x; rm -rf /"
+	if _, err := svc.Logs(context.Background(), task, c); err == nil {
+		t.Error("Logs() accepted a runtime ID with shell characters")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"infra/internal/app"
 	"infra/internal/domain"
 	"infra/internal/session"
 	"infra/internal/tui/components/actionmenu"
@@ -25,6 +26,9 @@ func (m *Model) taskActions() []taskAction {
 	return []taskAction{
 		{label: "Connect (ECS Exec shell)", key: m.keys.Connect, run: func(m *Model, t domain.Task) tea.Cmd {
 			return m.withContainer(t, pendingConnect)
+		}},
+		{label: "Logs (docker logs on the EC2 host)", key: m.keys.Logs, run: func(m *Model, t domain.Task) tea.Cmd {
+			return m.withContainer(t, pendingLogs)
 		}},
 		{label: "Port forward (SSM)", key: m.keys.PortForward, run: func(m *Model, t domain.Task) tea.Cmd {
 			return m.withContainer(t, pendingPortForward)
@@ -94,8 +98,11 @@ func (m *Model) withContainer(t domain.Task, p pendingAction) tea.Cmd {
 func (m *Model) useContainer(c domain.Container) tea.Cmd {
 	m.container = c
 	m.view = viewList
-	if m.pending == pendingConnect {
+	switch m.pending {
+	case pendingConnect:
 		return m.connect(m.task, c)
+	case pendingLogs:
+		return m.readLogs(m.task, c)
 	}
 	if err := m.task.CanExec(c); err != nil {
 		return section.Error(err)
@@ -111,6 +118,34 @@ func (m *Model) connect(t domain.Task, c domain.Container) tea.Cmd {
 		return section.Error(err)
 	}
 	s, err := m.sessions.Start(session.KindShell, fmt.Sprintf("%s · %s · shell", taskLabel(t), c.Name), cmd)
+	if err != nil {
+		return section.Error(fmt.Errorf("starting session: %w", err))
+	}
+	return func() tea.Msg { return section.OpenSessionMsg{ID: s.ID} }
+}
+
+type logsMsg struct {
+	title string
+	cmd   app.Command
+	err   error
+}
+
+// readLogs finds the task's EC2 host, then follows the container's docker
+// logs there in a session.
+func (m *Model) readLogs(t domain.Task, c domain.Container) tea.Cmd {
+	svc := m.svc
+	title := fmt.Sprintf("%s · %s · logs", taskLabel(t), c.Name)
+	return tea.Batch(section.Status("Finding the host of "+taskLabel(t)+"…"), func() tea.Msg {
+		cmd, err := svc.Logs(context.Background(), t, c)
+		return logsMsg{title: title, cmd: cmd, err: err}
+	})
+}
+
+func (m *Model) startLogs(msg logsMsg) tea.Cmd {
+	if msg.err != nil {
+		return section.Error(msg.err)
+	}
+	s, err := m.sessions.Start(session.KindShell, msg.title, msg.cmd)
 	if err != nil {
 		return section.Error(fmt.Errorf("starting session: %w", err))
 	}

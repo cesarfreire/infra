@@ -18,6 +18,7 @@ type keyMap struct {
 	Deploy       key.Binding
 	Scale        key.Binding
 	Watch        key.Binding
+	Logs         key.Binding
 }
 
 func defaultKeyMap() keyMap {
@@ -37,5 +38,6 @@ func defaultKeyMap() keyMap {
 		Deploy:       key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "force deploy")),
 		Scale:        key.NewBinding(key.WithKeys("N"), key.WithHelp("N", "desired count")),
 		Watch:        key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "watch deployment")),
+		Logs:         key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
 	}
 }

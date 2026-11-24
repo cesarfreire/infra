@@ -10,21 +10,25 @@ func TestOpenerCommand(t *testing.T) {
 	tests := []struct {
 		name      string
 		goos      string
+		wsl       bool
 		available []string
 		wantName  string
 		wantErr   error
 	}{
-		{"darwin", "darwin", nil, "open", nil},
-		{"windows", "windows", nil, "rundll32", nil},
-		{"wsl prefers wslview", "linux", []string{"wslview", "xdg-open"}, "wslview", nil},
-		{"linux xdg-open", "linux", []string{"xdg-open"}, "xdg-open", nil},
-		{"linux nothing", "linux", nil, "", ErrNoOpener},
+		{"darwin", "darwin", false, nil, "open", nil},
+		{"windows", "windows", false, nil, "rundll32", nil},
+		{"wsl prefers wslview", "linux", true, []string{"wslview", "rundll32.exe", "xdg-open"}, "wslview", nil},
+		{"wsl windows browser", "linux", true, []string{"rundll32.exe", "xdg-open"}, "rundll32.exe", nil},
+		{"linux xdg-open", "linux", false, []string{"xdg-open"}, "xdg-open", nil},
+		{"linux ignores windows", "linux", false, []string{"rundll32.exe"}, "", ErrNoOpener},
+		{"linux nothing", "linux", false, nil, "", ErrNoOpener},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var started string
 			o := &Opener{
 				goos: tt.goos,
+				wsl:  tt.wsl,
 				lookPath: func(name string) (string, error) {
 					if slices.Contains(tt.available, name) {
 						return "/usr/bin/" + name, nil

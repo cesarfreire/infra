@@ -92,3 +92,21 @@ func TestSetSizeResizesSessions(t *testing.T) {
 		t.Errorf("size = %dx%d, want 100x30", s.term.Width(), s.term.Height())
 	}
 }
+
+func TestSessionKeepsScrollback(t *testing.T) {
+	m := NewManager()
+	m.SetSize(20, 5)
+	s, err := m.Start(KindShell, "seq", app.Command{Name: "seq", Args: []string{"1", "50"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-s.Done()
+	waitFor(t, func() bool { return strings.Contains(s.Render(), "50") })
+	if n := s.LineCount(); n < 50 {
+		t.Fatalf("LineCount() = %d, want at least 50", n)
+	}
+	lines := s.Lines(0, 2)
+	if len(lines) != 2 || lines[0].String() != "1" || lines[1].String() != "2" {
+		t.Errorf("oldest lines = %q", lines)
+	}
+}

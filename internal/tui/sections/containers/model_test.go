@@ -31,6 +31,7 @@ var (
 type fakeService struct {
 	tasksFor  [2]string // last ListTasks cluster, service
 	connected string    // container name
+	logged    string    // container whose logs were read
 	forwarded [2]int
 	consoled  string
 	reads     int
@@ -55,6 +56,11 @@ func (f *fakeService) ListTasks(_ context.Context, cluster, service string) ([]d
 
 func (f *fakeService) Connect(_ domain.Task, c domain.Container) (app.Command, error) {
 	f.connected = c.Name
+	return app.Command{Name: "true"}, nil
+}
+
+func (f *fakeService) Logs(_ context.Context, _ domain.Task, c domain.Container) (app.Command, error) {
+	f.logged = c.Name
 	return app.Command{Name: "true"}, nil
 }
 
@@ -273,6 +279,17 @@ func TestConnectSingleContainer(t *testing.T) {
 	}
 	if _, ok := out[0].(section.OpenSessionMsg); !ok {
 		t.Errorf("expected OpenSessionMsg, got %#v", out[0])
+	}
+}
+
+func TestLogsOpenSession(t *testing.T) {
+	m, svc, rec := openTasks(t)
+	out := send(m, press("l"))
+	if svc.logged != "app" || len(rec.kinds) != 1 || rec.kinds[0] != session.KindShell {
+		t.Fatalf("logged = %q, sessions = %v", svc.logged, rec.kinds)
+	}
+	if _, ok := out[len(out)-1].(section.OpenSessionMsg); !ok {
+		t.Errorf("expected OpenSessionMsg last, got %#v", out)
 	}
 }
 

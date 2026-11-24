@@ -35,6 +35,7 @@ type Service interface {
 	ListTasks(ctx context.Context, cluster, service string) ([]domain.Task, error)
 	Connect(task domain.Task, container domain.Container) (app.Command, error)
 	PortForward(task domain.Task, container domain.Container, localPort, remotePort int) (app.Command, error)
+	Logs(ctx context.Context, task domain.Task, container domain.Container) (app.Command, error)
 	OpenClusterConsole(c domain.Cluster) (string, error)
 	OpenServiceConsole(s domain.Service) (string, error)
 	OpenTaskConsole(t domain.Task) (string, error)
@@ -101,6 +102,7 @@ type pendingAction int
 const (
 	pendingConnect pendingAction = iota
 	pendingPortForward
+	pendingLogs
 )
 
 type clustersLoadedMsg struct {
@@ -321,6 +323,8 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			cmds = append(cmds, m.readService())
 		}
 		return m, tea.Batch(cmds...)
+	case logsMsg:
+		return m, m.startLogs(msg)
 	case rolloutMsg:
 		return m, m.handleRollout(msg)
 	case revisionMsg:
@@ -615,7 +619,7 @@ func (m *Model) Help() []key.Binding {
 	case viewActions, viewPicker:
 		return append(m.menu.Help(), k.Back)
 	case viewTaskDetails:
-		return append(m.details.Help(), k.Connect, k.PortForward, k.Console, k.Back)
+		return append(m.details.Help(), k.Connect, k.Logs, k.PortForward, k.Console, k.Back)
 	case viewServiceDetails:
 		return append(m.details.Help(), k.Watch, k.Deploy, k.Scale, k.Back)
 	case viewWatch:
@@ -636,7 +640,7 @@ func (m *Model) Help() []key.Binding {
 	case levelServices:
 		b = []key.Binding{k.OpenTasks, k.AllTasks, k.Details, k.Watch, k.Deploy, k.Scale, k.Console, k.Favorite, k.Refresh, k.Back}
 	case levelTasks:
-		b = []key.Binding{k.Actions, k.Connect, k.PortForward, k.Console, k.Details, k.Refresh, k.Back}
+		b = []key.Binding{k.Actions, k.Connect, k.Logs, k.PortForward, k.Console, k.Details, k.Refresh, k.Back}
 	}
 	return append(b, l.Help()...)
 }

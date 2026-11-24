@@ -333,6 +333,27 @@ func (s *ContainerService) PortForward(task domain.Task, container domain.Contai
 	return s.sessions.ContainerPortForwardSession(task, container, pf), nil
 }
 
+// LogsTail is how many lines Logs shows before following.
+const LogsTail = 500
+
+// Logs returns the command that follows `docker logs` of container on the
+// EC2 instance running the task, through SSM. Fargate tasks have no host.
+func (s *ContainerService) Logs(ctx context.Context, task domain.Task, container domain.Container) (Command, error) {
+	if task.ContainerInstanceARN == "" {
+		return Command{}, fmt.Errorf("task %s: %w", task.ID, domain.ErrNoContainerHost)
+	}
+	// The runtime ID is a docker container ID (hex); anything else would be
+	// passed to a remote shell.
+	if container.RuntimeID == "" || strings.Trim(container.RuntimeID, "0123456789abcdef") != "" {
+		return Command{}, fmt.Errorf("container %s has no docker ID", container.Name)
+	}
+	host, err := s.repo.ContainerHost(ctx, task.Cluster, task.ContainerInstanceARN)
+	if err != nil {
+		return Command{}, fmt.Errorf("finding the host of task %s: %w", task.ID, err)
+	}
+	return s.sessions.RemoteCommandSession(host, fmt.Sprintf("sudo docker logs --tail %d -f %s", LogsTail, container.RuntimeID)), nil
+}
+
 // OpenClusterConsole opens the cluster page in the web console.
 func (s *ContainerService) OpenClusterConsole(c domain.Cluster) (string, error) {
 	return s.open(s.console.ClusterURL(c.Name))

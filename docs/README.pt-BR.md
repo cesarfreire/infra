@@ -42,7 +42,7 @@ Interface de terminal para operar infraestrutura na AWS sem sair do terminal. Li
 | Seção | O que faz |
 |---|---|
 | **Instances** (EC2) | Shell via SSM, port forward, start/stop/reboot, detalhes com CPU, rede e créditos de CPU |
-| **Containers** (ECS) | Clusters › services › tasks. Shell com ECS Exec, port forward para containers, forçar deploy, alterar o desired count, acompanhar rollouts e eventos do service, gráficos de CPU e memória |
+| **Containers** (ECS) | Clusters › services › tasks. Shell com ECS Exec, logs dos containers (`docker logs` na EC2 hospedeira, via SSM), port forward para containers, forçar deploy, alterar o desired count, acompanhar rollouts e eventos do service, gráficos de CPU e memória |
 | **Load balancers** (ALB/NLB) | Load balancers › target groups › targets com a saúde de cada um. Listeners, requisições, latência e erros 5XX |
 | **Key-value DBs** (DynamoDB) | Scan paginado, busca por chave, item em JSON, edição e exclusão de itens, capacidade consumida e throttles |
 | **Caches** (ElastiCache) | Redis, Valkey e memcached, incluindo serverless. `valkey-cli`/`redis-cli` e port forward através de um jump host. CPU, memória, conexões e taxa de acerto |
@@ -109,7 +109,7 @@ As notificações do sistema usam `notify-send` no Linux, `osascript` no macOS e
 | Seção | Teclas |
 |---|---|
 | Instances | `enter` ações · `c` shell · `p` port forward · `o` console · `d` detalhes · `S` start · `X` stop · `B` reboot |
-| Containers | clusters: `enter` services · `t` todas as tasks — services: `enter` tasks · `d` detalhes e deploys · `w` acompanhar o deploy · `D` forçar deploy · `N` desired count — tasks: `enter` ações · `c` shell · `p` port forward |
+| Containers | clusters: `enter` services · `t` todas as tasks — services: `enter` tasks · `d` detalhes e deploys · `w` acompanhar o deploy · `D` forçar deploy · `N` desired count — tasks: `enter` ações · `c` shell · `l` logs · `p` port forward |
 | Acompanhamento de deploy | `p` pausar/retomar · `r` atualizar agora · `v` mudanças em relação à revisão anterior · `R` rollback · `D` novo deploy · `↑`/`↓` rolar |
 | Config | `tab` parâmetros/secrets · `enter` detalhes · `v` revelar o valor (pede confirmação) · `o` console |
 | Load balancers | `enter` target groups › targets · `d` detalhes com listeners |
@@ -117,7 +117,7 @@ As notificações do sistema usam `notify-send` no Linux, `osascript` no macOS e
 | Caches | `c` CLI via jump host · `p` port forward via jump host · `d` detalhes |
 | Queues | `enter`/`d` detalhes · `m` espiar mensagens |
 | Favorites | `enter` ir até o recurso · `x` remover |
-| Sessions | `enter` anexar · `x` encerrar · `ctrl+]` desanexar |
+| Sessions | `enter` anexar · `x` encerrar · `ctrl+]` desanexar · roda do mouse ou `shift+pgup`/`shift+pgdown` rola o histórico · arraste para selecionar e copiar (OSC 52) |
 | Detalhes | `↑`/`↓` rolar · `t` janela de tempo · `r` atualizar os gráficos |
 
 Em diálogos de confirmação, só `y` confirma. `n`, `esc` ou um clique cancelam.
@@ -141,6 +141,7 @@ Os arquivos ficam em `~/.config/infra/` (ou no diretório de configuração do s
 ## Pré-requisitos na AWS
 
 - **Shell e port forward em instâncias:** as instâncias precisam do SSM Agent e de um instance profile com `AmazonSSMManagedInstanceCore`.
+- **Logs dos containers (`l`):** apenas para tasks em container instances EC2 (não Fargate). O comando `sudo docker logs --tail 500 -f <container>` roda na EC2 hospedeira via SSM, então ela precisa do SSM Agent e da `AmazonSSMManagedInstanceCore`. `ctrl+c` para de acompanhar.
 - **ECS Exec:** o service precisa de `enableExecuteCommand: true` (vale para tasks iniciadas depois de ativar) e a task role precisa das permissões `ssmmessages:*`.
 - **Métricas de task no ECS:** exigem Container Insights com *enhanced observability* no cluster. As métricas de service funcionam sempre.
 - **Caches:** são acessados por um *jump host*, uma instância em execução com o SSM Agent e acesso de rede ao cache. Para o `c` funcionar, ela precisa ter `valkey-cli` ou `redis-cli` instalado.

@@ -49,8 +49,9 @@ func defaultKeyMap() KeyMap {
 		Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		ClearFilter: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear filter")),
 		ApplyFilter: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply")),
-		Up:          key.NewBinding(key.WithKeys("up", "k")),
-		Down:        key.NewBinding(key.WithKeys("down", "j")),
+		// Arrows only: letters (and ctrl chords) belong to the filter input.
+		Up:   key.NewBinding(key.WithKeys("up")),
+		Down: key.NewBinding(key.WithKeys("down")),
 	}
 }
 

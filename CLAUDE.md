@@ -39,6 +39,7 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
     - `TaskDefinition` caches revisions, which are immutable.
     - `PreviousRevision` picks the rollback target: an older deployment with a different revision, else `family:revision-1`.
     - `Rollback` (`ServiceController.UpdateTaskDefinition`) is checked by the read-only policy.
+  - `ContainerService.Logs` resolves the task's EC2 host (`ContainerRepository.ContainerHost`, via `DescribeContainerInstances`) and returns a `RemoteCommandSession` running `sudo docker logs --tail 500 -f <runtimeID>`. Fargate tasks (no `Task.ContainerInstanceARN`) fail with `domain.ErrNoContainerHost`; the runtime ID must be hex because it goes into a remote shell.
   - `ConfigService` reads parameters and secrets. Values are read on demand and never cached.
   - Item editing: `ParseItemJSON` and `PrepareItemUpdate` refuse changes to the key attributes, and they give sets and binaries their DynamoDB types back after a JSON edit.
   - Ports are split per resource (interface segregation), with a shared `URLOpener`:
@@ -90,7 +91,7 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
   - `Store.Scope(profile, region)` returns a `*Scoped`, which satisfies `section.Bookmarks` and `section.Prefs`.
 - `internal/adapter/notify`: desktop notifications. It uses `osascript` on macOS, a Windows toast via `powershell.exe` under WSL (detected with `WSL_DISTRO_NAME`/`WSL_INTEROP`, using the PowerShell AppUserModelID), and `notify-send` elsewhere. `main` sets `Options.Notify` only when `Available()`.
 - `internal/adapter/github`: `Releases` implements `app.ReleaseSource` with the anonymous GitHub REST API (`/repos/{repo}/releases/latest`, 5s timeout).
-- `internal/adapter/browser`: opens URLs (`wslview` first on Linux for WSL, then `xdg-open`).
+- `internal/adapter/browser`: opens URLs. Under WSL it uses the Windows default browser (`wslview`, else `rundll32.exe url.dll,FileProtocolHandler`), because `xdg-open` would start a Linux browser in a WSLg window; elsewhere `xdg-open`.
 - `internal/session`: `Manager` and `Session`. Each session is an `app.Command` running in a PTY (`creack/pty`), with its screen kept in a `charmbracelet/x/vt` emulator.
   - Three goroutines per session:
     - output: pty → emulator
@@ -100,6 +101,10 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
   - `SetSize` resizes all sessions together, since they all share the same panel.
   - `Close` kills the whole process group, so `session-manager-plugin` dies too.
   - `main` calls `CloseAll` on exit.
+  - `LineCount`/`Lines(from, n)` expose the scrollback (main screen only, none in the alternate screen) followed by the screen, as copied `uv.Line`s. `screenMu` serializes emulator writes and resizes against them, because `SafeEmulator` hands out buffers by pointer.
+- Sessions section (`sections/sessions`): the app captures the mouse, so the terminal's own selection does not work there. `scroll.go` adds scrollback and copy instead.
+  - The view renders `Session.Lines` from `top`, or follows the output (`follow`). The wheel and `shift+pgup`/`shift+pgdown` scroll; once a session ends, plain arrows and pgup/pgdown scroll too. Typing returns to the live screen.
+  - Dragging highlights the cells (reverse video). Releasing copies the text with `tea.SetClipboard` (OSC 52).
 - `internal/filter`: the generic list-filter language. Terms are combined with AND. A term is free text (matched against every field) or `field:value`. Matching is a case- and accent-insensitive substring search (`filter.Fold`, also used by the picker), e.g. `web state:running tag:env=prod`. Each section maps its entity to `[]filter.Field`. For instances that mapping is `filterFields`.
 - `internal/tui`: root Bubble Tea model. It owns the layout, menu, focus (menu vs content), status bar and footer help.
   - `header.go`: the profile and region chips. Rendering and mouse hit-testing share `headerSegments()`.
@@ -122,6 +127,7 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
       - Choosing a result emits `NavigateMsg` + `RevealMsg`, like Favorites.
     - `Options.Updates` is checked once in `Init`. A newer release adds a right-aligned `↑ vX available` segment to the header (`targetUpdate`), which opens `Options.OpenURL` on click. Failures are silent. It is off with `--no-update-check` or `"updateCheck": false` in `settings.json`.
     - The initial context is `--profile`/`--region`, else the last one used (`state.json`), else `$AWS_PROFILE` and the profile's region.
+    - Clicks go to the section under the pointer. Wheel events over the content, and drags/releases anywhere, go to the focused section (`forwardMouse`), with the same content-relative coordinates.
     - Keys: `ctrl+p` (profile) and `ctrl+r` (region), or a click on the chips. They work in every mode except `ModeRaw`, where the remote shell needs them.
 - `internal/tui/section`: the `Section` interface every menu entry implements, plus `StatusMsg`/`Status`/`Error` for writing to the status bar.
   - `Deps` (`deps.go`) is what every section gets besides its use cases: `Theme`, `Bookmarks`, `Prefs` and `ReadOnly`. Helpers: `ToggleFavorite`, `Visit`, `Star` and `BlockWrite`.
@@ -187,7 +193,7 @@ go test ./internal/tui/sections/instances -run TestPortForwardForm   # single te
   - There is one `listview` per level (clusters › services › tasks). `level` tracks the depth, and `esc` goes up (to `tasksParent` from tasks). Only the clusters level returns `ModeNormal`.
   - `t` lists every task of the cluster.
   - Load messages carry the cluster/service they were loaded for. Stale results are ignored.
-  - Tasks with more than one running container go through a container picker (`pendingAction`) before connecting or port forwarding.
+  - Tasks with more than one running container go through a container picker (`pendingAction`) before connecting, reading logs (`l`) or port forwarding. Logs resolve the host asynchronously (`logsMsg`) and then open a shell-kind session.
 - Key-value specifics (`sections/keyvalue`):
   - There are two levels: tables, then items.
   - Items come from a paginated scan (`n` loads the next page and appends it) or from a key query (`f`: a partition key plus an optional sort-key prefix).

@@ -91,6 +91,9 @@ type Task struct {
 	StoppedAt     time.Time
 	StoppedReason string
 	StopCode      string
+	// ContainerInstanceARN is the EC2 container instance running the task;
+	// empty on Fargate.
+	ContainerInstanceARN string
 }
 
 // Container is a container inside a task.

@@ -69,6 +69,16 @@ func TestFilterLifecycle(t *testing.T) {
 	}
 }
 
+func TestFilterKeepsNavigationLetters(t *testing.T) {
+	m := newList()
+	m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	typeText(m, "jk")
+	m.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
+	if !m.Filtering() || m.Query().String() != "jk" {
+		t.Errorf("filtering = %v, query = %q; want still typing \"jk\"", m.Filtering(), m.Query().String())
+	}
+}
+
 func TestStates(t *testing.T) {
 	m := newList()
 	m.StartLoading()

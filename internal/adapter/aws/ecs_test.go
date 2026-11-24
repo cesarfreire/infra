@@ -2,6 +2,7 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
@@ -52,6 +53,13 @@ func (f *fakeECS) ListTasks(_ context.Context, in *ecs.ListTasksInput, _ ...func
 	f.listTasksInput = in
 	f.listedStatuses = append(f.listedStatuses, string(in.DesiredStatus))
 	return &ecs.ListTasksOutput{TaskArns: []string{"arn:aws:ecs:r:1:task/prod/abc123"}}, nil
+}
+
+func (f *fakeECS) DescribeContainerInstances(_ context.Context, in *ecs.DescribeContainerInstancesInput, _ ...func(*ecs.Options)) (*ecs.DescribeContainerInstancesOutput, error) {
+	if in.ContainerInstances[0] != "arn:aws:ecs:r:1:container-instance/prod/ci1" {
+		return &ecs.DescribeContainerInstancesOutput{}, nil
+	}
+	return &ecs.DescribeContainerInstancesOutput{ContainerInstances: []types.ContainerInstance{{Ec2InstanceId: sdkaws.String("i-0abc")}}}, nil
 }
 
 func (f *fakeECS) DescribeTasks(context.Context, *ecs.DescribeTasksInput, ...func(*ecs.Options)) (*ecs.DescribeTasksOutput, error) {
@@ -118,6 +126,17 @@ func TestListTasks(t *testing.T) {
 
 	if _, err := repo.ListTasks(context.Background(), "prod", ""); err != nil || f.listTasksInput.ServiceName != nil {
 		t.Error("an empty service should list the whole cluster")
+	}
+}
+
+func TestContainerHost(t *testing.T) {
+	repo := NewContainerRepository(&fakeECS{})
+	got, err := repo.ContainerHost(context.Background(), "prod", "arn:aws:ecs:r:1:container-instance/prod/ci1")
+	if err != nil || got != "i-0abc" {
+		t.Errorf("ContainerHost() = %q, %v", got, err)
+	}
+	if _, err := repo.ContainerHost(context.Background(), "prod", "arn:aws:ecs:r:1:container-instance/prod/gone"); !errors.Is(err, domain.ErrNoContainerHost) {
+		t.Errorf("ContainerHost(missing) error = %v", err)
 	}
 }
 

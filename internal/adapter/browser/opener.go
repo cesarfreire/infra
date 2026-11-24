@@ -3,6 +3,7 @@ package browser
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"runtime"
 )
@@ -13,13 +14,19 @@ var ErrNoOpener = errors.New("no browser launcher found")
 // Opener implements app.URLOpener using the OS launcher.
 type Opener struct {
 	goos     string
+	wsl      bool
 	lookPath func(string) (string, error)
 	start    func(name string, args ...string) error
 }
 
 // New returns an Opener for the current OS.
 func New() *Opener {
-	return &Opener{goos: runtime.GOOS, lookPath: exec.LookPath, start: startDetached}
+	return &Opener{
+		goos:     runtime.GOOS,
+		wsl:      os.Getenv("WSL_DISTRO_NAME") != "" || os.Getenv("WSL_INTEROP") != "",
+		lookPath: exec.LookPath,
+		start:    startDetached,
+	}
 }
 
 // Open launches the browser without waiting for it to exit.
@@ -38,11 +45,16 @@ func (o *Opener) command(url string) (string, []string, error) {
 	case "windows":
 		return "rundll32", []string{"url.dll,FileProtocolHandler", url}, nil
 	}
-	// wslview comes first so WSL opens the Windows browser.
-	for _, name := range []string{"wslview", "xdg-open"} {
-		if _, err := o.lookPath(name); err == nil {
-			return name, []string{url}, nil
-		}
+	// Under WSL, open Windows' default browser; xdg-open would start a Linux
+	// one in a separate WSLg window.
+	if _, err := o.lookPath("wslview"); o.wsl && err == nil {
+		return "wslview", []string{url}, nil
+	}
+	if _, err := o.lookPath("rundll32.exe"); o.wsl && err == nil {
+		return "rundll32.exe", []string{"url.dll,FileProtocolHandler", url}, nil
+	}
+	if _, err := o.lookPath("xdg-open"); err == nil {
+		return "xdg-open", []string{url}, nil
 	}
 	return "", nil, ErrNoOpener
 }

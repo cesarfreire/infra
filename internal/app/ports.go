@@ -51,12 +51,16 @@ type ContainerRepository interface {
 	// ListTasks lists running tasks; an empty service lists every task in
 	// the cluster.
 	ListTasks(ctx context.Context, cluster, service string) ([]domain.Task, error)
+	// ContainerHost returns the EC2 instance ID of a container instance.
+	ContainerHost(ctx context.Context, cluster, containerInstanceARN string) (string, error)
 }
 
 // ContainerSessionBuilder builds remote session commands for containers.
 type ContainerSessionBuilder interface {
 	ContainerShellSession(task domain.Task, container domain.Container) Command
 	ContainerPortForwardSession(task domain.Task, container domain.Container, pf domain.PortForward) Command
+	// RemoteCommandSession runs command interactively on the instance.
+	RemoteCommandSession(instanceID, command string) Command
 }
 
 // ContainerConsoleURLBuilder builds web console links for container resources.

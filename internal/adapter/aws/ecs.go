@@ -30,6 +30,7 @@ type ECSAPI interface {
 	DescribeTasks(ctx context.Context, in *ecs.DescribeTasksInput, optFns ...func(*ecs.Options)) (*ecs.DescribeTasksOutput, error)
 	UpdateService(ctx context.Context, in *ecs.UpdateServiceInput, optFns ...func(*ecs.Options)) (*ecs.UpdateServiceOutput, error)
 	DescribeTaskDefinition(ctx context.Context, in *ecs.DescribeTaskDefinitionInput, optFns ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error)
+	DescribeContainerInstances(ctx context.Context, in *ecs.DescribeContainerInstancesInput, optFns ...func(*ecs.Options)) (*ecs.DescribeContainerInstancesOutput, error)
 }
 
 // maxServiceEvents bounds the events kept per service (ECS returns up to 100).
@@ -242,6 +243,20 @@ func (r *ContainerRepository) ListDeploymentTasks(ctx context.Context, cluster, 
 	return r.describeTasks(ctx, cluster, slices.Compact(arns))
 }
 
+// ContainerHost returns the EC2 instance ID behind a container instance.
+func (r *ContainerRepository) ContainerHost(ctx context.Context, cluster, containerInstanceARN string) (string, error) {
+	out, err := r.client.DescribeContainerInstances(ctx, &ecs.DescribeContainerInstancesInput{
+		Cluster: &cluster, ContainerInstances: []string{containerInstanceARN},
+	})
+	if err != nil {
+		return "", classify(err)
+	}
+	if len(out.ContainerInstances) == 0 || sdkaws.ToString(out.ContainerInstances[0].Ec2InstanceId) == "" {
+		return "", fmt.Errorf("container instance %s: %w", lastSegment(containerInstanceARN), domain.ErrNoContainerHost)
+	}
+	return sdkaws.ToString(out.ContainerInstances[0].Ec2InstanceId), nil
+}
+
 func (r *ContainerRepository) taskARNs(ctx context.Context, in *ecs.ListTasksInput) ([]string, error) {
 	var arns []string
 	pages := ecs.NewListTasksPaginator(r.client, in)
@@ -271,23 +286,24 @@ func (r *ContainerRepository) describeTasks(ctx context.Context, cluster string,
 
 func toDomainTask(cluster string, t types.Task) domain.Task {
 	task := domain.Task{
-		ID:               lastSegment(sdkaws.ToString(t.TaskArn)),
-		ARN:              sdkaws.ToString(t.TaskArn),
-		Cluster:          cluster,
-		LastStatus:       sdkaws.ToString(t.LastStatus),
-		DesiredStatus:    sdkaws.ToString(t.DesiredStatus),
-		Health:           string(t.HealthStatus),
-		LaunchType:       string(t.LaunchType),
-		TaskDefinition:   lastSegment(sdkaws.ToString(t.TaskDefinitionArn)),
-		CPU:              sdkaws.ToString(t.Cpu),
-		Memory:           sdkaws.ToString(t.Memory),
-		AvailabilityZone: sdkaws.ToString(t.AvailabilityZone),
-		StartedAt:        sdkaws.ToTime(t.StartedAt),
-		ExecEnabled:      t.EnableExecuteCommand,
-		StartedBy:        sdkaws.ToString(t.StartedBy),
-		StoppedAt:        sdkaws.ToTime(t.StoppedAt),
-		StoppedReason:    sdkaws.ToString(t.StoppedReason),
-		StopCode:         string(t.StopCode),
+		ID:                   lastSegment(sdkaws.ToString(t.TaskArn)),
+		ARN:                  sdkaws.ToString(t.TaskArn),
+		Cluster:              cluster,
+		LastStatus:           sdkaws.ToString(t.LastStatus),
+		DesiredStatus:        sdkaws.ToString(t.DesiredStatus),
+		Health:               string(t.HealthStatus),
+		LaunchType:           string(t.LaunchType),
+		TaskDefinition:       lastSegment(sdkaws.ToString(t.TaskDefinitionArn)),
+		CPU:                  sdkaws.ToString(t.Cpu),
+		Memory:               sdkaws.ToString(t.Memory),
+		AvailabilityZone:     sdkaws.ToString(t.AvailabilityZone),
+		StartedAt:            sdkaws.ToTime(t.StartedAt),
+		ExecEnabled:          t.EnableExecuteCommand,
+		StartedBy:            sdkaws.ToString(t.StartedBy),
+		StoppedAt:            sdkaws.ToTime(t.StoppedAt),
+		StoppedReason:        sdkaws.ToString(t.StoppedReason),
+		StopCode:             string(t.StopCode),
+		ContainerInstanceARN: sdkaws.ToString(t.ContainerInstanceArn),
 	}
 	// Tasks started by a service have the group "service:<name>".
 	if name, ok := strings.CutPrefix(sdkaws.ToString(t.Group), "service:"); ok {

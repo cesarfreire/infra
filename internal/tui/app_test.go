@@ -144,6 +144,26 @@ func TestMouseClickSelectsMenuItem(t *testing.T) {
 	}
 }
 
+func TestMouseDragAndWheelReachContent(t *testing.T) {
+	m, s := newTestModel()
+	m, _ = send(t, m, tea.MouseClickMsg{X: 50, Y: 10, Button: tea.MouseLeft})
+	f := s[m.active]
+	f.received = nil
+	m, _ = send(t, m, tea.MouseWheelMsg{X: 50, Y: 10, Button: tea.MouseWheelUp})
+	m, _ = send(t, m, tea.MouseWheelMsg{X: 1, Y: 10, Button: tea.MouseWheelUp}) // over the menu: dropped
+	send(t, m, tea.MouseReleaseMsg{X: 1, Y: 10, Button: tea.MouseLeft})         // a drag may end anywhere
+	if len(f.received) != 2 {
+		t.Fatalf("received %#v, want a wheel and a release", f.received)
+	}
+	wheel, ok := f.received[0].(tea.MouseWheelMsg)
+	if !ok || wheel.X >= 50 || wheel.Y >= 10 {
+		t.Errorf("wheel should be relative to the content, got %#v", f.received[0])
+	}
+	if _, ok := f.received[1].(tea.MouseReleaseMsg); !ok {
+		t.Errorf("expected a release, got %#v", f.received[1])
+	}
+}
+
 func TestNonInputMessagesAreBroadcast(t *testing.T) {
 	type asyncResult struct{}
 	m, s := newTestModel()

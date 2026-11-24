@@ -8,10 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -36,6 +38,9 @@ type Session struct {
 	done chan struct{}
 	// drained is closed when all process output has been read.
 	drained chan struct{}
+	// screenMu serializes writes and resizes against Lines, which reads
+	// emulator buffers that SafeEmulator only exposes by pointer.
+	screenMu sync.RWMutex
 
 	mu        sync.Mutex // guards the fields below and pty Close/Setsize
 	err       error
@@ -73,7 +78,9 @@ func (s *Session) pumpOutput(notify func()) {
 	for {
 		n, err := s.pty.Read(buf)
 		if n > 0 {
+			s.screenMu.Lock()
 			_, _ = s.term.Write(buf[:n])
+			s.screenMu.Unlock()
 			notify()
 		}
 		if err != nil {
@@ -135,6 +142,44 @@ func (s *Session) Err() error {
 // Render returns the current screen with ANSI styles.
 func (s *Session) Render() string { return s.term.Render() }
 
+// LineCount returns how many lines Lines can return: the scrollback (none
+// while a full-screen program uses the alternate screen) plus the screen.
+func (s *Session) LineCount() int {
+	s.screenMu.RLock()
+	defer s.screenMu.RUnlock()
+	return s.scrollbackLen() + s.term.Height()
+}
+
+func (s *Session) scrollbackLen() int {
+	if s.term.IsAltScreen() {
+		return 0
+	}
+	return s.term.ScrollbackLen()
+}
+
+// Lines returns copies of up to n lines starting at from, where 0 is the
+// oldest scrollback line and the screen follows the scrollback.
+func (s *Session) Lines(from, n int) []uv.Line {
+	s.screenMu.RLock()
+	defer s.screenMu.RUnlock()
+	sb, w := s.scrollbackLen(), s.term.Width()
+	lines := make([]uv.Line, 0, max(0, n))
+	for i := max(0, from); i < from+n && i < sb+s.term.Height(); i++ {
+		if i < sb {
+			lines = append(lines, slices.Clone(s.term.Scrollback().Line(i)))
+			continue
+		}
+		line := make(uv.Line, w)
+		for x := range w {
+			if c := s.term.CellAt(x, i-sb); c != nil {
+				line[x] = *c
+			}
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 // Cursor returns the cursor position and whether it is visible.
 func (s *Session) Cursor() (x, y int, visible bool) {
 	pos := s.term.CursorPosition()
@@ -160,7 +205,9 @@ func (s *Session) Resize(cols, rows int) {
 	if cols <= 0 || rows <= 0 || (cols == s.term.Width() && rows == s.term.Height()) {
 		return
 	}
+	s.screenMu.Lock()
 	s.term.Resize(cols, rows)
+	s.screenMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if f, ok := s.pty.(*os.File); ok && !s.ptyClosed {

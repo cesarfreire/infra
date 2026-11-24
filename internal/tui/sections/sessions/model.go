@@ -36,11 +36,15 @@ type Manager interface {
 type updateMsg struct{}
 
 type keyMap struct {
-	Up     key.Binding
-	Down   key.Binding
-	Attach key.Binding
-	Close  key.Binding
-	Detach key.Binding
+	Up         key.Binding
+	Down       key.Binding
+	Attach     key.Binding
+	Close      key.Binding
+	Detach     key.Binding
+	ScrollUp   key.Binding
+	ScrollDown key.Binding
+	Scroll     key.Binding // help only
+	Copy       key.Binding // help only
 }
 
 // Model implements section.Section, section.Listener and section.CursorProvider.
@@ -55,6 +59,12 @@ type Model struct {
 	focused  bool
 	width    int
 	height   int
+
+	// top is the first line shown (see session.Lines) unless follow is set,
+	// which keeps the newest output in view.
+	top    int
+	follow bool
+	sel    selection
 }
 
 // New creates the Sessions section.
@@ -69,6 +79,11 @@ func New(mgr Manager, th theme.Theme) *Model {
 			Attach: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
 			Close:  key.NewBinding(key.WithKeys("x", "delete"), key.WithHelp("x", "close")),
 			Detach: key.NewBinding(key.WithKeys("ctrl+]"), key.WithHelp("ctrl+]", "detach")),
+			// Shifted like in terminals: plain pgup/pgdown belong to the remote program.
+			ScrollUp:   key.NewBinding(key.WithKeys("shift+pgup", "shift+up")),
+			ScrollDown: key.NewBinding(key.WithKeys("shift+pgdown", "shift+down")),
+			Scroll:     key.NewBinding(key.WithKeys("shift+pgup"), key.WithHelp("wheel/shift+pgup", "scroll")),
+			Copy:       key.NewBinding(key.WithKeys("mouse"), key.WithHelp("drag", "copy")),
 		},
 	}
 }
@@ -125,10 +140,29 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			s.Paste(msg.Content)
 		}
 	case tea.MouseClickMsg:
-		if m.attached == 0 {
-			if idx := msg.Y - listTop; idx >= 0 && idx < len(m.mgr.List()) {
-				m.cursor = idx
-				m.attach(m.mgr.List()[idx].ID)
+		if s := m.current(); s != nil {
+			m.startSelection(s, msg.Mouse())
+			return m, nil
+		}
+		if idx := msg.Y - listTop; idx >= 0 && idx < len(m.mgr.List()) {
+			m.cursor = idx
+			m.attach(m.mgr.List()[idx].ID)
+		}
+	case tea.MouseMotionMsg:
+		if s := m.current(); s != nil {
+			m.extendSelection(s, msg.Mouse())
+		}
+	case tea.MouseReleaseMsg:
+		if s := m.current(); s != nil {
+			return m, m.copySelection(s)
+		}
+	case tea.MouseWheelMsg:
+		if s := m.current(); s != nil {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.scroll(s, -wheelLines)
+			case tea.MouseWheelDown:
+				m.scroll(s, wheelLines)
 			}
 		}
 	}
@@ -158,6 +192,7 @@ func (m *Model) reportExits() tea.Cmd {
 func (m *Model) attach(id int) {
 	if s := m.mgr.Get(id); s != nil {
 		m.attached = id
+		m.follow, m.sel = true, selection{}
 		m.running[id] = s.Running()
 	}
 }
@@ -168,6 +203,17 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.attached = 0
 			return nil
 		}
+		ended := !s.Running()
+		switch {
+		case key.Matches(msg, m.keys.ScrollUp) || (ended && key.Matches(msg, m.keys.Up, key.NewBinding(key.WithKeys("pgup")))):
+			m.scroll(s, -m.scrollStep(msg))
+			return nil
+		case key.Matches(msg, m.keys.ScrollDown) || (ended && key.Matches(msg, m.keys.Down, key.NewBinding(key.WithKeys("pgdown")))):
+			m.scroll(s, m.scrollStep(msg))
+			return nil
+		}
+		// Typing goes back to the live screen, as in a terminal.
+		m.follow, m.sel = true, selection{}
 		s.SendKey(vt.KeyPressEvent(msg))
 		return nil
 	}
@@ -196,22 +242,23 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *Model) Help() []key.Binding {
 	if s := m.current(); s != nil {
 		if s.Running() {
-			return []key.Binding{m.keys.Detach}
+			return []key.Binding{m.keys.Detach, m.keys.Scroll, m.keys.Copy}
 		}
-		return []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))}
+		return []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")), m.keys.Scroll, m.keys.Copy}
 	}
 	return []key.Binding{m.keys.Up, m.keys.Down, m.keys.Attach, m.keys.Close}
 }
 
 func (m *Model) Cursor() *tea.Cursor {
 	s := m.current()
-	if s == nil || !m.focused || !s.Running() {
+	if s == nil || !m.focused || !s.Running() || !m.follow {
 		return nil
 	}
 	x, y, visible := s.Cursor()
 	if !visible {
 		return nil
 	}
+	// While following, the view ends with the screen, so rows match.
 	return tea.NewCursor(x, y+termTop)
 }
 
@@ -232,8 +279,18 @@ func (m *Model) viewTerminal(s *session.Session) string {
 		}
 		hint = "esc to go back"
 	}
+	top := m.viewTop(s)
+	if !m.follow {
+		hint += fmt.Sprintf(" · scrolled back %d lines", s.LineCount()-m.rows()-top)
+	}
 	header := m.theme.Title.Render(s.Title) + " " + status + " " + m.theme.Muted.Render(hint)
-	return header + "\n" + s.Render()
+	lines := s.Lines(top, m.rows())
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		m.sel.highlight(line, top+i)
+		out[i] = line.Render()
+	}
+	return header + "\n" + strings.Join(out, "\n")
 }
 
 func (m *Model) viewList() string {

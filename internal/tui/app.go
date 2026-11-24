@@ -158,6 +158,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.MouseClickMsg:
 		return m.handleClick(msg)
+	case tea.MouseWheelMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
+		return m.forwardMouse(msg.(tea.MouseMsg))
 	case section.StatusMsg:
 		m.status = msg
 		return m, nil
@@ -302,6 +304,30 @@ func (m Model) handleClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	rel.X = msg.X - menuWidth - frameX/2
 	rel.Y = contentY
 	return m.updateCurrent(rel)
+}
+
+// forwardMouse sends wheel, drag and release events to the focused section,
+// relative to its content like clicks. Drags and releases are forwarded
+// wherever they happen, so a selection that leaves the panel still ends.
+func (m Model) forwardMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+	if m.dialog != dialogNone || len(m.sections) == 0 || m.focus != focusContent {
+		return m, nil
+	}
+	frameX, frameY := m.theme.Panel.GetFrameSize()
+	if _, wheel := msg.(tea.MouseWheelMsg); wheel && (mouse.X < menuWidth || mouse.Y < headerHeight) {
+		return m, nil
+	}
+	mouse.X -= menuWidth + frameX/2
+	mouse.Y -= headerHeight + frameY/2
+	switch msg.(type) {
+	case tea.MouseWheelMsg:
+		return m.updateCurrent(tea.MouseWheelMsg(mouse))
+	case tea.MouseMotionMsg:
+		return m.updateCurrent(tea.MouseMotionMsg(mouse))
+	default:
+		return m.updateCurrent(tea.MouseReleaseMsg(mouse))
+	}
 }
 
 // broadcast forwards non-input messages (async results, spinner ticks...) to

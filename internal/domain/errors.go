@@ -14,6 +14,8 @@ var (
 	ErrTaskNotRunning = errors.New("task is not running")
 	// ErrContainerNotRunning is returned when an operation requires a running container.
 	ErrContainerNotRunning = errors.New("container is not running")
+	// ErrNoContainerHost is returned for tasks without an EC2 host (Fargate).
+	ErrNoContainerHost = errors.New("task does not run on an EC2 container instance")
 	// ErrExecNotEnabled is returned when ECS Exec is not available for a task.
 	ErrExecNotEnabled = errors.New("ECS Exec is not enabled (enableExecuteCommand)")
 )

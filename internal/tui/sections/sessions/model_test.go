@@ -107,3 +107,41 @@ func TestCloseRemovesSession(t *testing.T) {
 		t.Error("x should remove the session")
 	}
 }
+
+func TestScrollAndCopy(t *testing.T) {
+	m, _, s := setup(t, app.Command{Name: "seq", Args: []string{"1", "100"}})
+	m.Update(section.OpenSessionMsg{ID: s.ID})
+	<-s.Done()
+	waitFor(t, func() bool { return strings.Contains(m.View(), "100") })
+
+	for range 30 {
+		m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	}
+	if v := m.View(); strings.Contains(v, "100") || !strings.Contains(v, "scrolled back") {
+		t.Fatalf("wheel up should show older lines:\n%s", v)
+	}
+	for range 20 {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp, Mod: tea.ModShift})
+	}
+	if !strings.Contains(m.View(), "\n1\n") && !strings.Contains(m.View(), "\n1\x1b") {
+		t.Fatalf("paging up should reach the first line:\n%s", m.View())
+	}
+
+	// Drag from the first column of row 1 to the end of row 2: lines "1" and "2".
+	m.Update(tea.MouseClickMsg{X: 0, Y: termTop, Button: tea.MouseLeft})
+	m.Update(tea.MouseMotionMsg{X: 5, Y: termTop + 1, Button: tea.MouseLeft})
+	if got := m.selectedText(s); got != "1\n2" {
+		t.Errorf("selected %q, want \"1\\n2\"", got)
+	}
+	_, cmd := m.Update(tea.MouseReleaseMsg{X: 5, Y: termTop + 1, Button: tea.MouseLeft})
+	if cmd == nil {
+		t.Fatal("releasing a drag should copy")
+	}
+
+	for range 100 {
+		m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	}
+	if v := m.View(); !strings.Contains(v, "100") || strings.Contains(v, "scrolled back") {
+		t.Errorf("scrolling to the bottom should follow the output again:\n%s", v)
+	}
+}
